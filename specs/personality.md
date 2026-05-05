@@ -35,17 +35,22 @@ class Personality:
 No noise — desires are exactly `±1.0` based on role. (Two Liberals start identical; behavioural variation is the LLM's job at runtime, not the engine's.)
 
 ### Opinions (seeded at game start, will mutate later)
-Initial values reflect what each role is *told* at game start per official rules at 5–6 players:
+
+At 5 players the Fascist team has **perfect information by elimination**: the Fascist is told who Hitler is, so the remaining 3 players must all be Liberal (and vice versa for Hitler). Liberals know nothing.
 
 | Viewer\Target | Liberal | Fascist (other) | Hitler |
 | ------------- | ------- | --------------- | ------ |
 | Liberal       | 0.0     | 0.0             | 0.0    |
-| Fascist       | 0.0     | n/a             | +1.0   |
-| Hitler        | 0.0     | +1.0            | n/a    |
+| Fascist       | -1.0    | n/a             | +1.0   |
+| Hitler        | -1.0    | +1.0            | n/a    |
 
-Liberals start with no information (all opinions exactly `0.0`). The Fascist team has mutual recognition: Hitler and the Fascist start the game knowing each other (5–6 player rule; differs at 7+) and their opinion of each other is exactly `+1.0` — *complete trust*, no fuzz, since the role information is given to them by the rules. The viewer's opinion of themselves is omitted from the dict.
+- `+1.0` = known ally (told by rules).
+- `-1.0` = known opponent (deduced by elimination at 5p).
+- `0.0`  = no information.
 
-No noise on opinions either. Public events later in the game will move them off these starting values.
+The viewer's opinion of themselves is omitted from the dict. No noise — values are exact. Public events later in the game will move these off their starting values; that update logic is out of scope for this spec.
+
+**Caveat:** the elimination-knowledge inference only holds at 5–6 players. At 7+ Hitler does not know who the Fascists are, so Hitler's by-elimination knowledge collapses. This logic must be revisited when we add bigger games.
 
 ## Edge cases
 - Initial personalities are fully deterministic from role + roster — no RNG, so no seed dependency at this stage.

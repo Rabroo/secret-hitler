@@ -54,20 +54,20 @@ def test_liberal_initial_opinions_are_exactly_zero():
             assert v == 0.0
 
 
-def test_fascist_team_mutually_recognises_at_5p_with_full_trust():
+def test_fascist_team_has_perfect_information_at_5p():
     players = assign_roles(seed=1)
     pers = build_personalities(players, seed=1)
     fascists = _by_role(players, Role.FASCIST)
     hitlers = _by_role(players, Role.HITLER)
     assert len(fascists) == 1 and len(hitlers) == 1
     fascist, hitler = fascists[0], hitlers[0]
-    # Exact +1.0: complete trust between confirmed allies, no noise.
+    # +1.0: known ally (told by rules).
     assert pers[fascist.id].opinions[hitler.id] == 1.0
     assert pers[hitler.id].opinions[fascist.id] == 1.0
-    # Their opinions of liberals stay at exactly 0.0.
+    # -1.0: known opponents (deduced by elimination at 5p).
     for liberal in _by_role(players, Role.LIBERAL):
-        assert pers[fascist.id].opinions[liberal.id] == 0.0
-        assert pers[hitler.id].opinions[liberal.id] == 0.0
+        assert pers[fascist.id].opinions[liberal.id] == -1.0
+        assert pers[hitler.id].opinions[liberal.id] == -1.0
 
 
 def test_personality_is_deterministic_for_same_seed():

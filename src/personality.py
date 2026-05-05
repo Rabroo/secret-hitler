@@ -14,6 +14,7 @@ from src.game import Player, Role
 
 
 _KNOWN_ALLY = 1.0
+_KNOWN_OPPONENT = -1.0
 
 
 @dataclass
@@ -32,15 +33,25 @@ def _base_desire(role: Role) -> float:
 def _base_opinion(viewer: Player, target: Player) -> float:
     """Initial trust between two players.
 
-    At 5 players, only the Fascist team is given role information at the start
-    of the game (the Fascist sees Hitler; Hitler sees the Fascist). Everyone
-    else — including every Liberal-Liberal pair — starts at exactly 0.0. Public
-    events (votes, enacted policies) will modify these later; that update logic
-    is out of scope for this spec.
+    5-player rule: the Fascist team has *perfect information by elimination*.
+    The Fascist is told who Hitler is, so the remaining 3 must all be Liberal;
+    same for Hitler. So we seed:
+      - Fascist team → fellow team member: +1.0 (known ally)
+      - Fascist team → any Liberal:        -1.0 (known opponent)
+      - Liberal     → anyone:               0.0 (no info)
+
+    NOTE: at 7+ players the Fascists know each other but Hitler does NOT know
+    them, and elimination no longer pins down the rest. This logic must be
+    revisited then.
     """
     fascist_team = (Role.FASCIST, Role.HITLER)
-    if viewer.role in fascist_team and target.role in fascist_team:
+    viewer_is_fascist_team = viewer.role in fascist_team
+    target_is_fascist_team = target.role in fascist_team
+
+    if viewer_is_fascist_team and target_is_fascist_team:
         return _KNOWN_ALLY
+    if viewer_is_fascist_team and not target_is_fascist_team:
+        return _KNOWN_OPPONENT
     return 0.0
 
 
