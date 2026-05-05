@@ -24,16 +24,29 @@ Keeping these contracts narrow and explicit lets us:
 - **Output:** `True` for Ja, `False` for Nein.
 - **Engine guarantees:** dead players are not asked to vote; the nominee is alive.
 
-## Future decisions (not yet implemented)
-These rows will be filled in as future phases land. Each will follow the same "engine pre-filters legal moves, callback returns one of them" shape:
+## Decision: Policy Discard (President)
+- **Caller:** the President during the legislative session.
+- **Callback:** `discard_fn(president: Player, hand: list[Policy]) -> Policy`
+- **Input:** the 3 policies just drawn off the deck.
+- **Output:** one of the 3 policies, to be discarded. The remaining 2 go to the Chancellor.
+- **Engine guarantees:** the hand has exactly 3 cards. The returned policy must be present in the hand (engine checks identity by *count*, so duplicates are handled correctly).
+- **LLMAgent variant:** uses an indexed JSON contract — `{"reasoning": "...", "discard_index": 0|1|2}` — so duplicate Fascist policies are unambiguous.
 
-| Phase                     | Callback signature                                           | Input                                  | Output                              |
-| ------------------------- | ------------------------------------------------------------ | -------------------------------------- | ----------------------------------- |
-| Policy discard (Pres)     | `discard_fn(president, hand: list[Policy]) -> Policy`        | 3 policies                             | 1 policy to discard                 |
-| Policy enact (Chancellor) | `enact_fn(chancellor, hand: list[Policy]) -> Policy`         | 2 policies                             | 1 policy to enact                   |
-| Investigate (power)       | `investigate_fn(president, targets: list[Player]) -> Player` | living non-self players                | 1 player to inspect                 |
-| Special election (power)  | `special_fn(president, targets: list[Player]) -> Player`     | living non-self players                | next president                      |
-| Execution (power)         | `execute_fn(president, targets: list[Player]) -> Player`     | living non-self players                | player to kill                      |
+## Decision: Policy Enact (Chancellor)
+- **Caller:** the Chancellor, immediately after the President's discard.
+- **Callback:** `enact_fn(chancellor: Player, hand: list[Policy]) -> Policy`
+- **Input:** the 2 policies the President passed.
+- **Output:** the policy to enact. The other is discarded.
+- **Engine guarantees:** the hand has exactly 2 cards. The returned policy must be present in the hand.
+- **LLMAgent variant:** `{"reasoning": "...", "enact_index": 0|1}`.
+
+## Future decisions (not yet implemented)
+| Phase                    | Callback signature                                           | Input                                  | Output                              |
+| ------------------------ | ------------------------------------------------------------ | -------------------------------------- | ----------------------------------- |
+| Investigate (power)      | `investigate_fn(president, targets: list[Player]) -> Player` | living non-self players                | 1 player to inspect                 |
+| Special election (power) | `special_fn(president, targets: list[Player]) -> Player`     | living non-self players                | next president                      |
+| Execution (power)        | `execute_fn(president, targets: list[Player]) -> Player`     | living non-self players                | player to kill                      |
+| Veto (Chancellor + Pres) | `veto_fn(player, hand) -> bool`                              | 2 policies                             | True to veto, False to enact one    |
 
 ## Player personality (planned, not yet wired)
 Each player will eventually carry:
