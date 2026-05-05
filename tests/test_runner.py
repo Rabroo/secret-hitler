@@ -61,6 +61,7 @@ def test_start_game_runs_requested_number_of_rounds(capsys):
 
 
 def test_start_game_president_rotation_is_in_seat_order(capsys):
+    # Presidency advances every round regardless of election outcome.
     start_game(seed=42, rounds=8)
     out = capsys.readouterr().out
     presidents = [
@@ -79,14 +80,43 @@ def test_start_game_seed_is_fully_deterministic(capsys):
     assert a == b
 
 
-def test_start_game_term_limit_excludes_previous_chancellor(capsys):
-    start_game(seed=42, rounds=4)
+def test_start_game_prints_votes_and_result_each_round(capsys):
+    start_game(seed=42, rounds=3)
     out = capsys.readouterr().out
-    lines = out.splitlines()
-    nominees = []
-    for line in lines:
+    # Every round should announce votes and a result.
+    assert out.count("Votes:") == 3
+    result_lines = [
+        line for line in out.splitlines() if line.startswith("Result:")
+    ]
+    assert len(result_lines) == 3
+    for line in result_lines:
+        assert ("ELECTED" in line) or ("REJECTED" in line)
+
+
+def _parse_elected_chancellors(out: str) -> list[int]:
+    """Walk runner output and return chancellors who passed the vote, in order."""
+    elected: list[int] = []
+    pending: int | None = None
+    for line in out.splitlines():
         if line.startswith("Nominated: Player "):
-            nominees.append(int(line.split()[-1]))
-    # After round 1, the previous chancellor must not be the new chancellor
-    for prev, curr in zip(nominees, nominees[1:]):
-        assert prev != curr
+            pending = int(line.split()[-1])
+        elif line.startswith("Result: ELECTED"):
+            assert pending is not None
+            elected.append(pending)
+            pending = None
+        elif line.startswith("Result: REJECTED"):
+            pending = None
+    return elected
+
+
+def test_start_game_term_limit_excludes_previous_elected_chancellor(capsys):
+    # 16 rounds at ~50% pass rate should yield several successful elections
+    # for the term-limit assertion to bite on.
+    start_game(seed=42, rounds=16)
+    out = capsys.readouterr().out
+    elected = _parse_elected_chancellors(out)
+    assert len(elected) >= 2, (
+        f"Need >=2 successful elections to test term limits; got {len(elected)}"
+    )
+    for prev, curr in zip(elected, elected[1:]):
+        assert prev != curr, f"Same chancellor elected back-to-back: {prev}"
