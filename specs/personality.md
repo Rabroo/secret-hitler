@@ -1,16 +1,15 @@
-# Spec: Player Personality (Desires + Opinions)
+# Spec: Player Personality (Desire + Predicted Roles)
 
 ## Goal
 Give each player a numeric personality the LLM can reason from. Two pieces:
 - A **desire** scalar in `[-1, +1]` describing how much the player wants Liberal (positive) vs. Fascist (negative) outcomes.
-- An **opinion map** `{other_player_id: float in [-1, +1]}` describing trust (positive) vs. suspicion (negative) of every other player.
+- A **predicted_roles** map `{other_player_id: float in [-1, +1]}` — *the viewer's belief about the other player's role*, with `+1.0 = "I think they are Liberal"` and `-1.0 = "I think they are on the Fascist team"`. `0.0` = no information.
 
-Both are seeded deterministically from `(role, role_visibility, seed)`. Opinions can be mutated by the game over time as public events happen (votes, enacted policies). Desires stay fixed for the life of the game.
+Initial values are exact and seeded only by role + 5p visibility rules. Public events (votes, enacted policies) move them later — see `specs/predicted_role_updates.md`.
 
 ## Inputs / Outputs
 **Inputs**
 - `players: list[Player]` — the full roster (with assigned roles).
-- `seed: int | None` — for deterministic noise.
 
 **Output**
 - `dict[player_id, Personality]` — one per player.
@@ -19,8 +18,8 @@ Both are seeded deterministically from `(role, role_visibility, seed)`. Opinions
 ```python
 @dataclass
 class Personality:
-    desire: float          # -1.0 (Liberal-aligned) .. +1.0 (Fascist-aligned)
-    opinions: dict[int, float]  # other_id -> -1.0 .. +1.0
+    desire: float                  # -1.0 (Fascist-aligned) .. +1.0 (Liberal-aligned)
+    predicted_roles: dict[int, float]  # other_id -> -1.0 (predicted Fascist) .. +1.0 (predicted Liberal)
 ```
 
 ## Seeding rules
@@ -32,34 +31,35 @@ class Personality:
 | Fascist  | `-1.0`      | Wants Fascist policies; wants Hitler elected late game.       |
 | Hitler   | `-1.0`      | Same alignment as Fascists; needs to stay hidden.             |
 
-No noise — desires are exactly `±1.0` based on role. (Two Liberals start identical; behavioural variation is the LLM's job at runtime, not the engine's.)
+No noise — exact values per role. Two Liberals start identical; behavioural variation is the LLM's job.
 
-### Opinions (seeded at game start, will mutate later)
+### Predicted roles (seeded at game start, will update later)
 
-At 5 players the Fascist team has **perfect information by elimination**: the Fascist is told who Hitler is, so the remaining 3 players must all be Liberal (and vice versa for Hitler). Liberals know nothing.
+At 5 players the Fascist team has **perfect information by elimination** — they know the role of every other player. Liberals know nothing. The numbers therefore reflect:
 
-| Viewer\Target | Liberal | Fascist (other) | Hitler |
-| ------------- | ------- | --------------- | ------ |
-| Liberal       | 0.0     | 0.0             | 0.0    |
-| Fascist       | -1.0    | n/a             | +1.0   |
-| Hitler        | -1.0    | +1.0            | n/a    |
+| Viewer\Target  | Liberal | Fascist (other) | Hitler |
+| -------------- | ------- | --------------- | ------ |
+| Liberal viewer | 0.0     | 0.0             | 0.0    |
+| Fascist viewer | +1.0    | n/a             | -1.0   |
+| Hitler viewer  | +1.0    | -1.0            | n/a    |
 
-- `+1.0` = known ally (told by rules).
-- `-1.0` = known opponent (deduced by elimination at 5p).
-- `0.0`  = no information.
+- `+1.0` = predicted Liberal.
+- `-1.0` = predicted Fascist (or Hitler — engine treats the Fascist team as one bucket for prediction).
+- `0.0` = no information.
 
-The viewer's opinion of themselves is omitted from the dict. No noise — values are exact. Public events later in the game will move these off their starting values; that update logic is out of scope for this spec.
+For Fascist team viewers these values are pinned at *known truth* and never update — they already know. For Liberal viewers they start at `0.0` and move based on observed events.
 
-**Caveat:** the elimination-knowledge inference only holds at 5–6 players. At 7+ Hitler does not know who the Fascists are, so Hitler's by-elimination knowledge collapses. This logic must be revisited when we add bigger games.
+The viewer's own entry is omitted from the dict.
 
 ## Edge cases
-- Initial personalities are fully deterministic from role + roster — no RNG, so no seed dependency at this stage.
-- Players added/removed mid-game are out of scope (we only build personalities once at game start; `advance_presidency` already handles dead players).
+- Initial personalities are fully deterministic from role + roster. No RNG.
+- Updates are clamped to `[-1.0, +1.0]` (see updates spec).
+- Players added/removed mid-game are out of scope; we build personalities once at game start.
 
 ## Out of scope
-- Opinion updates from public events (next phase, after legislative session lands).
-- 7+ player rules (Hitler doesn't know Fascists at that count).
-- LLM-driven personality drift / sentiment analysis of in-game speech.
+- Update logic for predicted_roles — see `specs/predicted_role_updates.md`.
+- 7+ player rules (Hitler doesn't know the Fascists at that count); revisit when we add bigger games.
+- LLM-driven (rather than heuristic) updates — also in the updates spec as future work.
 
 ## Dependencies
-Stdlib only (`random`, `dataclasses`).
+Stdlib only (`dataclasses`).
