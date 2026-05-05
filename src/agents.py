@@ -17,8 +17,9 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
-from src.game import ChooseFn, Player, VoteFn
+from src.game import ChooseFn, DiscardFn, EnactFn, Player, VoteFn
 from src.personality import Personality
+from src.policies import Policy
 
 
 _VALID_VOTES = {"ja": True, "nein": False}
@@ -31,9 +32,13 @@ class PlayerAgent(Protocol):
 
     last_nominate_reasoning: str
     last_vote_reasoning: str
+    last_discard_reasoning: str
+    last_enact_reasoning: str
 
     def nominate(self, eligible: list[Player]) -> Player: ...
     def vote(self, president: Player, nominee: Player) -> bool: ...
+    def discard_policy(self, hand: list[Policy]) -> Policy: ...
+    def enact_policy(self, hand: list[Policy]) -> Policy: ...
 
 
 @dataclass
@@ -42,6 +47,8 @@ class RandomAgent:
     seed: Optional[int] = None
     last_nominate_reasoning: str = ""
     last_vote_reasoning: str = ""
+    last_discard_reasoning: str = ""
+    last_enact_reasoning: str = ""
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.seed)
@@ -56,6 +63,16 @@ class RandomAgent:
         self.last_vote_reasoning = _RANDOM_REASONING
         return result
 
+    def discard_policy(self, hand: list[Policy]) -> Policy:
+        chosen = self._rng.choice(hand)
+        self.last_discard_reasoning = _RANDOM_REASONING
+        return chosen
+
+    def enact_policy(self, hand: list[Policy]) -> Policy:
+        chosen = self._rng.choice(hand)
+        self.last_enact_reasoning = _RANDOM_REASONING
+        return chosen
+
 
 @dataclass
 class LLMAgent:
@@ -66,6 +83,8 @@ class LLMAgent:
     fallback: PlayerAgent
     last_nominate_reasoning: str = ""
     last_vote_reasoning: str = ""
+    last_discard_reasoning: str = ""
+    last_enact_reasoning: str = ""
 
     # --- prompt construction -------------------------------------------------
 
@@ -110,7 +129,93 @@ class LLMAgent:
             '"vote": "ja" | "nein"}'
         )
 
+    def _discard_user_prompt(self, hand: list[Policy]) -> str:
+        indexed = ", ".join(
+            f"[{i}] {p.value.upper()}" for i, p in enumerate(hand)
+        )
+        return (
+            "You are the President. You drew 3 policies privately — only you "
+            "and the Chancellor (after your discard) will see them.\n"
+            f"Hand: {indexed}\n"
+            "Pick ONE index to discard. The other 2 go to the Chancellor.\n"
+            'Reply as JSON: {"reasoning": "<one short sentence>", '
+            '"discard_index": 0 | 1 | 2}'
+        )
+
+    def _enact_user_prompt(self, hand: list[Policy]) -> str:
+        indexed = ", ".join(
+            f"[{i}] {p.value.upper()}" for i, p in enumerate(hand)
+        )
+        return (
+            "You are the Chancellor. The President passed you 2 policies — "
+            "only you have seen these.\n"
+            f"Hand: {indexed}\n"
+            "Pick ONE index to ENACT. The other is discarded.\n"
+            'Reply as JSON: {"reasoning": "<one short sentence>", '
+            '"enact_index": 0 | 1}'
+        )
+
     # --- decisions -----------------------------------------------------------
+
+    def discard_policy(self, hand: list[Policy]) -> Policy:
+        if getattr(self.client, "is_exhausted", False):
+            return self._discard_fallback(hand)
+
+        system = self._system_prompt()
+        user = self._discard_user_prompt(hand)
+
+        for _ in range(2):
+            try:
+                reply = self.client.chat(system, user, json_mode=True)
+            except RuntimeError:
+                return self._discard_fallback(hand)
+
+            parsed = self._parse_indexed_reply(reply, "discard_index", len(hand))
+            if parsed is not None:
+                idx, reasoning = parsed
+                self.last_discard_reasoning = reasoning
+                return hand[idx]
+            user = (
+                "Your previous reply was invalid. "
+                + self._discard_user_prompt(hand)
+            )
+
+        print(
+            f"[agent] Player {self.player.id} LLM gave invalid discards twice; "
+            "falling back to random",
+            file=sys.stderr,
+        )
+        return self._discard_fallback(hand)
+
+    def enact_policy(self, hand: list[Policy]) -> Policy:
+        if getattr(self.client, "is_exhausted", False):
+            return self._enact_fallback(hand)
+
+        system = self._system_prompt()
+        user = self._enact_user_prompt(hand)
+
+        for _ in range(2):
+            try:
+                reply = self.client.chat(system, user, json_mode=True)
+            except RuntimeError:
+                return self._enact_fallback(hand)
+
+            parsed = self._parse_indexed_reply(reply, "enact_index", len(hand))
+            if parsed is not None:
+                idx, reasoning = parsed
+                self.last_enact_reasoning = reasoning
+                return hand[idx]
+            user = (
+                "Your previous reply was invalid. "
+                + self._enact_user_prompt(hand)
+            )
+
+        print(
+            f"[agent] Player {self.player.id} LLM gave invalid enactions twice; "
+            "falling back to random",
+            file=sys.stderr,
+        )
+        return self._enact_fallback(hand)
 
     def nominate(self, eligible: list[Player]) -> Player:
         if getattr(self.client, "is_exhausted", False):
@@ -185,6 +290,16 @@ class LLMAgent:
         self.last_vote_reasoning = _FALLBACK_REASONING
         return result
 
+    def _discard_fallback(self, hand: list[Policy]) -> Policy:
+        result = self.fallback.discard_policy(hand)
+        self.last_discard_reasoning = _FALLBACK_REASONING
+        return result
+
+    def _enact_fallback(self, hand: list[Policy]) -> Policy:
+        result = self.fallback.enact_policy(hand)
+        self.last_enact_reasoning = _FALLBACK_REASONING
+        return result
+
     # --- parsing -------------------------------------------------------------
 
     @staticmethod
@@ -204,6 +319,24 @@ class LLMAgent:
         if not isinstance(reasoning, str):
             reasoning = ""
         return choice, reasoning
+
+    @staticmethod
+    def _parse_indexed_reply(
+        reply: str, key: str, hand_size: int
+    ) -> Optional[tuple[int, str]]:
+        try:
+            data = json.loads(reply or "")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        idx = data.get(key)
+        if not isinstance(idx, int) or not (0 <= idx < hand_size):
+            return None
+        reasoning = data.get("reasoning", "")
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        return idx, reasoning
 
     @staticmethod
     def _parse_vote_reply(reply: str) -> Optional[tuple[bool, str]]:
@@ -240,3 +373,17 @@ def make_vote_fn(agents: dict[int, PlayerAgent]) -> VoteFn:
         return agents[voter.id].vote(president, nominee)
 
     return vote_fn
+
+
+def make_discard_fn(agents: dict[int, PlayerAgent]) -> DiscardFn:
+    def discard_fn(president: Player, hand: list[Policy]) -> Policy:
+        return agents[president.id].discard_policy(hand)
+
+    return discard_fn
+
+
+def make_enact_fn(agents: dict[int, PlayerAgent]) -> EnactFn:
+    def enact_fn(chancellor: Player, hand: list[Policy]) -> Policy:
+        return agents[chancellor.id].enact_policy(hand)
+
+    return enact_fn

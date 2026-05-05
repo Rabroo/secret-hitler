@@ -17,19 +17,24 @@ from src.agents import (
     PlayerAgent,
     RandomAgent,
     make_choose_fn,
+    make_discard_fn,
+    make_enact_fn,
     make_vote_fn,
 )
 from src.game import (
     ElectionResult,
     GameState,
+    LegislativeSessionResult,
     Player,
     advance_presidency,
     assign_roles,
     eligible_chancellors,
+    legislative_session,
     nominate_chancellor,
     vote_chancellor,
 )
 from src.personality import Personality, build_personalities
+from src.policies import PolicyDeck
 
 
 _DIVIDER = "=" * 60
@@ -92,12 +97,24 @@ def _render_dashboard(
     personalities: dict[int, Personality],
     president: Player,
     nominee: Player,
+    leg: LegislativeSessionResult | None,
 ) -> str:
     lines = [
         _DIVIDER,
         f"DASHBOARD — Round {round_num}",
         _DIVIDER,
     ]
+    if leg is not None:
+        # Operator-only view of the legislative session — players' LLMs do NOT
+        # see this block (only their own role's prompt).
+        lines.append(
+            "  [OPERATOR-ONLY] Drawn: "
+            + ", ".join(p.value.upper() for p in leg.drawn)
+            + f"  |  Pres discarded: {leg.discarded_by_president.value.upper()}"
+            + "  |  Chancellor hand: "
+            + ", ".join(p.value.upper() for p in leg.handed_to_chancellor)
+            + f"  |  Enacted: {leg.enacted.value.upper()}"
+        )
     for p in players:
         agent = agents[p.id]
         tags = []
@@ -114,6 +131,14 @@ def _render_dashboard(
             lines.append(f'    "{agent.last_nominate_reasoning}"')
         if p.alive and agent.last_vote_reasoning:
             lines.append(f'  Vote reasoning: "{agent.last_vote_reasoning}"')
+        if leg is not None and p.id == president.id and agent.last_discard_reasoning:
+            lines.append(
+                f"  Discarded: {leg.discarded_by_president.value.upper()}"
+            )
+            lines.append(f'    "{agent.last_discard_reasoning}"')
+        if leg is not None and p.id == nominee.id and agent.last_enact_reasoning:
+            lines.append(f"  Enacted: {leg.enacted.value.upper()}")
+            lines.append(f'    "{agent.last_enact_reasoning}"')
         # Opinions snapshot — currently static; will move once event-driven
         # opinion updates are built.
         opinions_str = "  ".join(
@@ -131,21 +156,28 @@ def _render_round(
     candidates: list[Player],
     chosen: Player,
     result: ElectionResult,
+    leg: LegislativeSessionResult | None,
+    state: GameState,
 ) -> str:
     votes_str = ", ".join(
         f"{pid}={'ja' if v else 'nein'}" for pid, v in sorted(result.votes.items())
     )
     outcome = "ELECTED" if result.passed else "REJECTED"
-    return "\n".join(
-        [
-            f"\n--- Round {round_num} ---",
-            f"President: Player {president.id}",
-            f"Eligible chancellors: {[p.id for p in candidates]}",
-            f"Nominated: Player {chosen.id}",
-            f"Votes: {votes_str}",
-            f"Result: {outcome} ({result.yes_count} ja, {result.no_count} nein)",
-        ]
-    )
+    lines = [
+        f"\n--- Round {round_num} ---",
+        f"President: Player {president.id}",
+        f"Eligible chancellors: {[p.id for p in candidates]}",
+        f"Nominated: Player {chosen.id}",
+        f"Votes: {votes_str}",
+        f"Result: {outcome} ({result.yes_count} ja, {result.no_count} nein)",
+    ]
+    if leg is not None:
+        lines.append(f"Enacted: {leg.enacted.value.upper()}")
+        lines.append(
+            f"Tally: L={state.liberal_policies_enacted} "
+            f"F={state.fascist_policies_enacted}"
+        )
+    return "\n".join(lines)
 
 
 def start_game(
@@ -163,6 +195,9 @@ def start_game(
     personalities = build_personalities(players)
     choose = make_choose_fn(agents)
     vote = make_vote_fn(agents)
+    discard = make_discard_fn(agents)
+    enact = make_enact_fn(agents)
+    deck = PolicyDeck(seed=seed)
 
     state = GameState(players=players, president_idx=0)
 
@@ -171,7 +206,14 @@ def start_game(
         candidates = eligible_chancellors(state)
         chosen = nominate_chancellor(state, choose)
         result = vote_chancellor(state, chosen, vote)
-        print(_render_round(round_num, president, candidates, chosen, result))
+
+        leg: LegislativeSessionResult | None = None
+        if result.passed:
+            leg = legislative_session(state, deck, president, chosen, discard, enact)
+            state.last_elected_president_id = president.id
+            state.last_elected_chancellor_id = chosen.id
+
+        print(_render_round(round_num, president, candidates, chosen, result, leg, state))
 
         if dashboard:
             print(
@@ -182,12 +224,10 @@ def start_game(
                     personalities=personalities,
                     president=president,
                     nominee=chosen,
+                    leg=leg,
                 )
             )
 
-        if result.passed:
-            state.last_elected_president_id = president.id
-            state.last_elected_chancellor_id = chosen.id
         advance_presidency(state)
 
     return state

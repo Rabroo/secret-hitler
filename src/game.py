@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
 
+from src.policies import Policy, PolicyDeck
+
 
 class Role(Enum):
     LIBERAL = "liberal"
@@ -36,10 +38,14 @@ class GameState:
     president_idx: int = 0
     last_elected_president_id: Optional[int] = None
     last_elected_chancellor_id: Optional[int] = None
+    liberal_policies_enacted: int = 0
+    fascist_policies_enacted: int = 0
 
 
 ChooseFn = Callable[[Player, list[Player]], Player]
 VoteFn = Callable[[Player, Player, Player], bool]
+DiscardFn = Callable[[Player, list[Policy]], Policy]
+EnactFn = Callable[[Player, list[Policy]], Policy]
 
 
 @dataclass
@@ -54,6 +60,15 @@ class ElectionResult:
     @property
     def no_count(self) -> int:
         return len(self.votes) - self.yes_count
+
+
+@dataclass
+class LegislativeSessionResult:
+    drawn: list[Policy]
+    discarded_by_president: Policy
+    handed_to_chancellor: list[Policy]
+    enacted: Policy
+    discarded_by_chancellor: Policy
 
 
 _FIVE_PLAYER_ROLES = [
@@ -144,3 +159,61 @@ def vote_chancellor(
     yes = sum(1 for v in votes.values() if v)
     no = len(votes) - yes
     return ElectionResult(passed=yes > no, votes=votes)
+
+
+def _remove_policy(hand: list[Policy], chosen: Policy) -> list[Policy]:
+    """Return a copy of `hand` with one occurrence of `chosen` removed.
+
+    Raises ValueError if `chosen` isn't present. Count-based so duplicate
+    policies (e.g. [F, F, L]) are handled correctly.
+    """
+    if chosen not in hand:
+        raise ValueError(
+            f"Policy {chosen.value} is not in the hand "
+            f"({[p.value for p in hand]})"
+        )
+    remaining = list(hand)
+    remaining.remove(chosen)
+    return remaining
+
+
+def legislative_session(
+    state: GameState,
+    deck: PolicyDeck,
+    president: Player,
+    chancellor: Player,
+    discard_fn: DiscardFn,
+    enact_fn: EnactFn,
+) -> LegislativeSessionResult:
+    """Run a full legislative session and update the public tally.
+
+    1. Draw 3 from `deck`.
+    2. Ask the President to pick one to discard via `discard_fn`.
+    3. Pass the remaining 2 to the Chancellor; ask which to enact via `enact_fn`.
+    4. Increment the corresponding tally on `state`.
+    5. Send both discarded policies to the deck's discard pile.
+
+    Win conditions are NOT checked here — caller's responsibility.
+    """
+    drawn = deck.draw(3)
+    president_discard = discard_fn(president, list(drawn))
+    chancellor_hand = _remove_policy(drawn, president_discard)
+
+    enacted = enact_fn(chancellor, list(chancellor_hand))
+    chancellor_discard_pile = _remove_policy(chancellor_hand, enacted)
+    chancellor_discard = chancellor_discard_pile[0]
+
+    if enacted is Policy.LIBERAL:
+        state.liberal_policies_enacted += 1
+    else:
+        state.fascist_policies_enacted += 1
+
+    deck.discard([president_discard, chancellor_discard])
+
+    return LegislativeSessionResult(
+        drawn=list(drawn),
+        discarded_by_president=president_discard,
+        handed_to_chancellor=list(chancellor_hand),
+        enacted=enacted,
+        discarded_by_chancellor=chancellor_discard,
+    )
