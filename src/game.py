@@ -33,6 +33,19 @@ class Player:
 
 
 @dataclass
+class RoundEvent:
+    """Public facts of one round — what every player at the table can see."""
+    round_num: int
+    president_id: int
+    chancellor_id: int
+    election_passed: bool
+    votes: dict[int, bool]
+    enacted: Optional[Policy]
+    liberal_tally: int
+    fascist_tally: int
+
+
+@dataclass
 class GameState:
     players: list[Player]
     president_idx: int = 0
@@ -40,6 +53,7 @@ class GameState:
     last_elected_chancellor_id: Optional[int] = None
     liberal_policies_enacted: int = 0
     fascist_policies_enacted: int = 0
+    history: list[RoundEvent] = field(default_factory=list)
 
 
 ChooseFn = Callable[[Player, list[Player]], Player]

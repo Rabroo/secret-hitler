@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
-from src.game import ChooseFn, DiscardFn, EnactFn, Player, VoteFn
+from src.game import ChooseFn, DiscardFn, EnactFn, Player, RoundEvent, VoteFn
 from src.personality import Personality
 from src.policies import Policy
 from src.prompts import (
@@ -89,6 +89,7 @@ class LLMAgent:
     all_players: list[Player]
     client: object  # LLMClient or compatible (FakeLLMClient in tests)
     fallback: PlayerAgent
+    history: list[RoundEvent] = field(default_factory=list)
     last_nominate_reasoning: str = ""
     last_vote_reasoning: str = ""
     last_discard_reasoning: str = ""
@@ -102,7 +103,9 @@ class LLMAgent:
         if getattr(self.client, "is_exhausted", False):
             return self._discard_fallback(hand)
 
-        system = system_prompt(self.player, self.personality, self.all_players)
+        system = system_prompt(
+            self.player, self.personality, self.all_players, history=self.history
+        )
         base_user = discard_prompt(hand)
         user = base_user
 
@@ -130,7 +133,9 @@ class LLMAgent:
         if getattr(self.client, "is_exhausted", False):
             return self._enact_fallback(hand)
 
-        system = system_prompt(self.player, self.personality, self.all_players)
+        system = system_prompt(
+            self.player, self.personality, self.all_players, history=self.history
+        )
         base_user = enact_prompt(hand)
         user = base_user
 
@@ -159,7 +164,9 @@ class LLMAgent:
             return self._nominate_fallback(eligible)
 
         eligible_ids = {p.id for p in eligible}
-        system = system_prompt(self.player, self.personality, self.all_players)
+        system = system_prompt(
+            self.player, self.personality, self.all_players, history=self.history
+        )
         base_user = nominate_prompt(eligible)
         user = base_user
 
@@ -187,7 +194,9 @@ class LLMAgent:
         if getattr(self.client, "is_exhausted", False):
             return self._vote_fallback(president, nominee)
 
-        system = system_prompt(self.player, self.personality, self.all_players)
+        system = system_prompt(
+            self.player, self.personality, self.all_players, history=self.history
+        )
         base_user = vote_prompt(president, nominee)
         user = base_user
 

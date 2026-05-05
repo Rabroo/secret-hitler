@@ -27,6 +27,7 @@ from src.game import (
     LegislativeSessionResult,
     Player,
     Role,
+    RoundEvent,
     advance_presidency,
     assign_roles,
     eligible_chancellors,
@@ -89,6 +90,7 @@ def _build_agents(
     seed: int | None,
     model: str,
     token_budget: int,
+    history: list,
 ) -> dict[int, PlayerAgent]:
     if mode == "random":
         # Each player gets its own seeded RNG stream derived from the master seed.
@@ -111,6 +113,7 @@ def _build_agents(
                 fallback=RandomAgent(
                     player=p, seed=None if seed is None else seed + p.id
                 ),
+                history=history,
             )
             for p in players
         }
@@ -136,56 +139,99 @@ def _render_dashboard(
     personalities: dict[int, Personality],
     president: Player,
     nominee: Player,
+    result: ElectionResult,
     leg: LegislativeSessionResult | None,
+    state: GameState,
 ) -> str:
     lines = [
+        "",
         _DIVIDER,
         f"DASHBOARD — Round {round_num}",
         _DIVIDER,
     ]
+
+    # --- GOVERNMENT ---
+    pres_label = f"Player {president.id} ({president.role.value.upper()})"
+    chan_label = f"Player {nominee.id} ({nominee.role.value.upper()})"
+    lines.append("\nGOVERNMENT")
+    lines.append(f"  President:    {pres_label}")
+    lines.append(f"  Chancellor:   {chan_label}")
+    outcome = "ELECTED" if result.passed else "REJECTED"
+    votes_str = ", ".join(
+        f"P{pid}={'ja' if v else 'nein'}" for pid, v in sorted(result.votes.items())
+    )
+    lines.append(
+        f"  Election:     {outcome} {result.yes_count}-{result.no_count}  ({votes_str})"
+    )
     if leg is not None:
-        # Operator-only view of the legislative session — players' LLMs do NOT
-        # see this block (only their own role's prompt).
+        lines.append(f"  Enacted:      {leg.enacted.value.upper()}")
+    lines.append(
+        f"  Tally now:    L={state.liberal_policies_enacted}  "
+        f"F={state.fascist_policies_enacted}"
+    )
+
+    # --- POLICY DECK (operator-only) ---
+    if leg is not None:
+        lines.append("\nPOLICY DECK  [OPERATOR-ONLY — players never see this block]")
         lines.append(
-            "  [OPERATOR-ONLY] Drawn: "
+            f"  Drawn (3):              "
             + ", ".join(p.value.upper() for p in leg.drawn)
-            + f"  |  Pres discarded: {leg.discarded_by_president.value.upper()}"
-            + "  |  Chancellor hand: "
-            + ", ".join(p.value.upper() for p in leg.handed_to_chancellor)
-            + f"  |  Enacted: {leg.enacted.value.upper()}"
         )
+        lines.append(
+            f"  Pres discarded:         {leg.discarded_by_president.value.upper()}"
+        )
+        lines.append(
+            f"  Chancellor hand (2):    "
+            + ", ".join(p.value.upper() for p in leg.handed_to_chancellor)
+        )
+        lines.append(
+            f"  Chancellor enacted:     {leg.enacted.value.upper()}"
+        )
+        lines.append(
+            f"  Chancellor discarded:   {leg.discarded_by_chancellor.value.upper()}"
+        )
+
+    # --- PLAYERS (reasoning + predicted roles) ---
+    lines.append("\nPLAYERS")
     for p in players:
         agent = agents[p.id]
         tags = []
         if p.id == president.id:
-            tags.append("*President*")
+            tags.append("[President]")
         if p.id == nominee.id:
-            tags.append("*Chancellor nominee*")
+            tags.append("[Chancellor]")
         if not p.alive:
             tags.append("(dead)")
         tag_suffix = ("  " + " ".join(tags)) if tags else ""
-        lines.append(f"\nPlayer {p.id} ({p.role.value.upper()}){tag_suffix}")
+        lines.append(f"\n  Player {p.id} ({p.role.value.upper()}){tag_suffix}")
+
         if p.id == president.id and agent.last_nominate_reasoning:
-            lines.append(f"  Nominate: Player {nominee.id}")
-            lines.append(f'    "{agent.last_nominate_reasoning}"')
+            lines.append(
+                f"    Nominate -> Player {nominee.id}: "
+                f'"{agent.last_nominate_reasoning}"'
+            )
         if p.alive and agent.last_vote_reasoning:
-            lines.append(f'  Vote reasoning: "{agent.last_vote_reasoning}"')
+            voted = "ja" if result.votes.get(p.id) else "nein"
+            lines.append(
+                f'    Vote: {voted}  "{agent.last_vote_reasoning}"'
+            )
         if leg is not None and p.id == president.id and agent.last_discard_reasoning:
             lines.append(
-                f"  Discarded: {leg.discarded_by_president.value.upper()}"
+                f"    Discard -> {leg.discarded_by_president.value.upper()}: "
+                f'"{agent.last_discard_reasoning}"'
             )
-            lines.append(f'    "{agent.last_discard_reasoning}"')
         if leg is not None and p.id == nominee.id and agent.last_enact_reasoning:
-            lines.append(f"  Enacted: {leg.enacted.value.upper()}")
-            lines.append(f'    "{agent.last_enact_reasoning}"')
-        # Predicted roles snapshot. +1 = predicted Liberal, -1 = predicted
-        # Fascist team, 0 = no info. Liberals' values move with enacted
-        # policies; Fascist team's stay pinned at known truth.
+            lines.append(
+                f"    Enact -> {leg.enacted.value.upper()}: "
+                f'"{agent.last_enact_reasoning}"'
+            )
+
         predicted_str = "  ".join(
-            f"{pid}:{score:+.2f}"
+            f"P{pid}:{score:+.2f}"
             for pid, score in sorted(personalities[p.id].predicted_roles.items())
         )
-        lines.append(f"  Predicted roles: {predicted_str}")
+        lines.append(f"    Predicted roles: {predicted_str}")
+
     lines.append(_DIVIDER)
     return "\n".join(lines)
 
@@ -234,17 +280,21 @@ def start_game(
     players = assign_roles(seed=seed, forced_roles=forced_roles)
     print(_render_operator_view(players))
 
-    agents = _build_agents(agents_mode, players, seed, model, token_budget)
+    state = GameState(players=players, president_idx=0)
+    if start_tally is not None:
+        state.liberal_policies_enacted, state.fascist_policies_enacted = start_tally
+
+    # Agents share a reference to state.history so that whenever the runner
+    # appends a RoundEvent, every LLM agent's next prompt sees it.
+    agents = _build_agents(
+        agents_mode, players, seed, model, token_budget, history=state.history
+    )
     personalities = build_personalities(players)
     choose = make_choose_fn(agents)
     vote = make_vote_fn(agents)
     discard = make_discard_fn(agents)
     enact = make_enact_fn(agents)
     deck = PolicyDeck(seed=seed, draw_pile=stack_deck)
-
-    state = GameState(players=players, president_idx=0)
-    if start_tally is not None:
-        state.liberal_policies_enacted, state.fascist_policies_enacted = start_tally
 
     for round_num in range(1, rounds + 1):
         president = state.players[state.president_idx]
@@ -261,6 +311,19 @@ def start_game(
             state.last_elected_president_id = president.id
             state.last_elected_chancellor_id = chosen.id
 
+        state.history.append(
+            RoundEvent(
+                round_num=round_num,
+                president_id=president.id,
+                chancellor_id=chosen.id,
+                election_passed=result.passed,
+                votes=dict(result.votes),
+                enacted=leg.enacted if leg is not None else None,
+                liberal_tally=state.liberal_policies_enacted,
+                fascist_tally=state.fascist_policies_enacted,
+            )
+        )
+
         print(_render_round(round_num, president, candidates, chosen, result, leg, state))
 
         if dashboard:
@@ -272,7 +335,9 @@ def start_game(
                     personalities=personalities,
                     president=president,
                     nominee=chosen,
+                    result=result,
                     leg=leg,
+                    state=state,
                 )
             )
 
