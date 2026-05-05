@@ -39,6 +39,21 @@ class GameState:
 
 
 ChooseFn = Callable[[Player, list[Player]], Player]
+VoteFn = Callable[[Player, Player, Player], bool]
+
+
+@dataclass
+class ElectionResult:
+    passed: bool
+    votes: dict[int, bool] = field(default_factory=dict)
+
+    @property
+    def yes_count(self) -> int:
+        return sum(1 for v in self.votes.values() if v)
+
+    @property
+    def no_count(self) -> int:
+        return len(self.votes) - self.yes_count
 
 
 _FIVE_PLAYER_ROLES = [
@@ -104,3 +119,28 @@ def nominate_chancellor(state: GameState, choose_fn: ChooseFn) -> Player:
             f"(eligible: {[p.id for p in candidates]})"
         )
     return chosen
+
+
+def vote_chancellor(
+    state: GameState,
+    nominee: Player,
+    vote_fn: VoteFn,
+) -> ElectionResult:
+    """Run the chancellor election and return the result without mutating state.
+
+    Every alive player votes via `vote_fn(voter, president, nominee)`. A strict
+    majority of yes-votes passes; ties and minority-yes fail.
+    """
+    if not nominee.alive:
+        raise ValueError(
+            f"Player {nominee.id} is dead and cannot stand for Chancellor"
+        )
+    president = state.players[state.president_idx]
+    votes: dict[int, bool] = {}
+    for voter in state.players:
+        if not voter.alive:
+            continue
+        votes[voter.id] = bool(vote_fn(voter, president, nominee))
+    yes = sum(1 for v in votes.values() if v)
+    no = len(votes) - yes
+    return ElectionResult(passed=yes > no, votes=votes)
