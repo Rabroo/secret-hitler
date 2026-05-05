@@ -26,15 +26,17 @@ from src.game import (
     GameState,
     LegislativeSessionResult,
     Player,
+    Role,
     advance_presidency,
     assign_roles,
     eligible_chancellors,
     legislative_session,
     nominate_chancellor,
+    update_predicted_roles_after_session,
     vote_chancellor,
 )
 from src.personality import Personality, build_personalities
-from src.policies import PolicyDeck
+from src.policies import Policy, PolicyDeck
 
 
 _DIVIDER = "=" * 60
@@ -42,6 +44,43 @@ _DEFAULT_ROUNDS = 8
 _DEFAULT_AGENTS = "random"
 _DEFAULT_MODEL = "gpt-5-mini"
 _DEFAULT_TOKEN_BUDGET = 50_000
+
+
+def _parse_force_roles(spec: str) -> list[Role]:
+    """`"1=LIBERAL,2=FASCIST,3=HITLER,4=LIBERAL,5=LIBERAL"` -> ordered list."""
+    by_id: dict[int, Role] = {}
+    for pair in spec.split(","):
+        pid_str, role_str = pair.strip().split("=")
+        by_id[int(pid_str)] = Role(role_str.strip().lower())
+    if sorted(by_id) != [1, 2, 3, 4, 5]:
+        raise ValueError(f"--force-roles must cover players 1..5, got {sorted(by_id)}")
+    return [by_id[i] for i in range(1, 6)]
+
+
+def _parse_start_tally(spec: str) -> tuple[int, int]:
+    """`"L=2,F=1"` -> (2, 1)."""
+    values: dict[str, int] = {}
+    for pair in spec.split(","):
+        key, val = pair.strip().split("=")
+        values[key.strip().upper()] = int(val)
+    if set(values) != {"L", "F"}:
+        raise ValueError(f"--start-tally needs L and F keys, got {set(values)}")
+    return values["L"], values["F"]
+
+
+def _parse_stack_deck(spec: str) -> list[Policy]:
+    """`"F,F,L,L,..."` -> [Policy.FASCIST, Policy.FASCIST, Policy.LIBERAL, ...]."""
+    letter_to_policy = {"L": Policy.LIBERAL, "F": Policy.FASCIST}
+    cards: list[Policy] = []
+    for letter in (s.strip().upper() for s in spec.split(",")):
+        if letter not in letter_to_policy:
+            raise ValueError(f"--stack-deck contains invalid card {letter!r}")
+        cards.append(letter_to_policy[letter])
+    if len(cards) != 17:
+        raise ValueError(
+            f"--stack-deck must have exactly 17 cards (got {len(cards)})"
+        )
+    return cards
 
 
 def _build_agents(
@@ -139,13 +178,14 @@ def _render_dashboard(
         if leg is not None and p.id == nominee.id and agent.last_enact_reasoning:
             lines.append(f"  Enacted: {leg.enacted.value.upper()}")
             lines.append(f'    "{agent.last_enact_reasoning}"')
-        # Opinions snapshot — currently static; will move once event-driven
-        # opinion updates are built.
-        opinions_str = "  ".join(
+        # Predicted roles snapshot. +1 = predicted Liberal, -1 = predicted
+        # Fascist team, 0 = no info. Liberals' values move with enacted
+        # policies; Fascist team's stay pinned at known truth.
+        predicted_str = "  ".join(
             f"{pid}:{score:+.2f}"
-            for pid, score in sorted(personalities[p.id].opinions.items())
+            for pid, score in sorted(personalities[p.id].predicted_roles.items())
         )
-        lines.append(f"  Opinions: {opinions_str}")
+        lines.append(f"  Predicted roles: {predicted_str}")
     lines.append(_DIVIDER)
     return "\n".join(lines)
 
@@ -187,8 +227,11 @@ def start_game(
     model: str = _DEFAULT_MODEL,
     token_budget: int = _DEFAULT_TOKEN_BUDGET,
     dashboard: bool = False,
+    forced_roles: list[Role] | None = None,
+    start_tally: tuple[int, int] | None = None,
+    stack_deck: list[Policy] | None = None,
 ) -> GameState:
-    players = assign_roles(seed=seed)
+    players = assign_roles(seed=seed, forced_roles=forced_roles)
     print(_render_operator_view(players))
 
     agents = _build_agents(agents_mode, players, seed, model, token_budget)
@@ -197,9 +240,11 @@ def start_game(
     vote = make_vote_fn(agents)
     discard = make_discard_fn(agents)
     enact = make_enact_fn(agents)
-    deck = PolicyDeck(seed=seed)
+    deck = PolicyDeck(seed=seed, draw_pile=stack_deck)
 
     state = GameState(players=players, president_idx=0)
+    if start_tally is not None:
+        state.liberal_policies_enacted, state.fascist_policies_enacted = start_tally
 
     for round_num in range(1, rounds + 1):
         president = state.players[state.president_idx]
@@ -210,6 +255,9 @@ def start_game(
         leg: LegislativeSessionResult | None = None
         if result.passed:
             leg = legislative_session(state, deck, president, chosen, discard, enact)
+            update_predicted_roles_after_session(
+                state, personalities, leg, president, chosen
+            )
             state.last_elected_president_id = president.id
             state.last_elected_chancellor_id = chosen.id
 
@@ -260,7 +308,25 @@ def main() -> None:
     start.add_argument(
         "--dashboard",
         action="store_true",
-        help="Print each player's reasoning and current opinions after each round",
+        help="Print each player's reasoning and predicted roles after each round",
+    )
+    start.add_argument(
+        "--force-roles",
+        type=str,
+        default=None,
+        help='Pin the role assignment, e.g. "1=LIBERAL,2=FASCIST,3=HITLER,4=LIBERAL,5=LIBERAL"',
+    )
+    start.add_argument(
+        "--start-tally",
+        type=str,
+        default=None,
+        help='Pin the starting policy tally, e.g. "L=2,F=1"',
+    )
+    start.add_argument(
+        "--stack-deck",
+        type=str,
+        default=None,
+        help='Pre-arrange the 17-card draw pile, e.g. "F,F,L,L,F,..."',
     )
 
     args = parser.parse_args()
@@ -272,6 +338,15 @@ def main() -> None:
             model=args.model,
             token_budget=args.token_budget,
             dashboard=args.dashboard,
+            forced_roles=(
+                _parse_force_roles(args.force_roles) if args.force_roles else None
+            ),
+            start_tally=(
+                _parse_start_tally(args.start_tally) if args.start_tally else None
+            ),
+            stack_deck=(
+                _parse_stack_deck(args.stack_deck) if args.stack_deck else None
+            ),
         )
 
 

@@ -1,8 +1,9 @@
-"""Per-player personality: desire scalar + per-pair opinion map.
+"""Per-player personality: desire scalar + predicted_roles map.
 
-Initial values are exact and seeded only by role + 5p visibility rules — no
-random noise. Public events will mutate opinions later (out of scope here).
-See specs/personality.md.
+Initial values are exact and seeded only by role + 5p visibility rules.
+predicted_roles[X] = +1 means "I predict X is Liberal", -1 means "I predict
+X is on the Fascist team", 0 means "no information". Public events update
+the values for Liberal viewers — see `specs/predicted_role_updates.md`.
 """
 
 from __future__ import annotations
@@ -13,14 +14,15 @@ from typing import Optional
 from src.game import Player, Role
 
 
-_KNOWN_ALLY = 1.0
-_KNOWN_OPPONENT = -1.0
+_PREDICTED_LIBERAL = 1.0
+_PREDICTED_FASCIST = -1.0
+_NO_INFO = 0.0
 
 
 @dataclass
 class Personality:
     desire: float
-    opinions: dict[int, float] = field(default_factory=dict)
+    predicted_roles: dict[int, float] = field(default_factory=dict)
 
 
 def _base_desire(role: Role) -> float:
@@ -30,45 +32,42 @@ def _base_desire(role: Role) -> float:
     return -1.0  # Fascist + Hitler both want fascist outcomes
 
 
-def _base_opinion(viewer: Player, target: Player) -> float:
-    """Initial trust between two players.
+def _base_predicted_role(viewer: Player, target: Player) -> float:
+    """Initial prediction of `target`'s role from `viewer`'s perspective.
 
     5-player rule: the Fascist team has *perfect information by elimination*.
     The Fascist is told who Hitler is, so the remaining 3 must all be Liberal;
     same for Hitler. So we seed:
-      - Fascist team → fellow team member: +1.0 (known ally)
-      - Fascist team → any Liberal:        -1.0 (known opponent)
-      - Liberal     → anyone:               0.0 (no info)
+      - Liberal viewer  → anyone:           0.0  (no info)
+      - Fascist viewer  → Liberal:         +1.0  (predicted Liberal — they know)
+      - Fascist viewer  → Hitler:          -1.0  (predicted Fascist team — they know)
+      - Hitler viewer   → Liberal:         +1.0
+      - Hitler viewer   → Fascist:         -1.0
 
-    NOTE: at 7+ players the Fascists know each other but Hitler does NOT know
-    them, and elimination no longer pins down the rest. This logic must be
-    revisited then.
+    NOTE: at 7+ players this elimination breaks; revisit then.
     """
-    fascist_team = (Role.FASCIST, Role.HITLER)
-    viewer_is_fascist_team = viewer.role in fascist_team
-    target_is_fascist_team = target.role in fascist_team
-
-    if viewer_is_fascist_team and target_is_fascist_team:
-        return _KNOWN_ALLY
-    if viewer_is_fascist_team and not target_is_fascist_team:
-        return _KNOWN_OPPONENT
-    return 0.0
+    if viewer.role is Role.LIBERAL:
+        return _NO_INFO
+    # Fascist or Hitler viewer — they have full info at 5p
+    if target.role is Role.LIBERAL:
+        return _PREDICTED_LIBERAL
+    return _PREDICTED_FASCIST
 
 
 def build_personalities(
     players: list[Player], seed: Optional[int] = None
 ) -> dict[int, Personality]:
-    # `seed` is accepted for API symmetry with the rest of the engine, but no
-    # randomness is used here — initial personalities are deterministic from role.
+    # `seed` is accepted for API symmetry with the rest of the engine; no RNG
+    # is used here — initial personalities are deterministic from role.
     del seed
     out: dict[int, Personality] = {}
     for viewer in players:
-        opinions = {
-            target.id: _base_opinion(viewer, target)
+        predicted = {
+            target.id: _base_predicted_role(viewer, target)
             for target in players
             if target.id != viewer.id
         }
         out[viewer.id] = Personality(
-            desire=_base_desire(viewer.role), opinions=opinions
+            desire=_base_desire(viewer.role), predicted_roles=predicted
         )
     return out

@@ -143,10 +143,10 @@ def test_start_game_dashboard_renders_each_round_with_dashboard_flag(capsys):
         assert f"Player {pid} (" in out
 
 
-def test_start_game_dashboard_shows_opinions(capsys):
+def test_start_game_dashboard_shows_predicted_roles(capsys):
     start_game(seed=42, rounds=1, dashboard=True)
     out = capsys.readouterr().out
-    assert "Opinions:" in out
+    assert "Predicted roles:" in out
 
 
 # --- legislative session integration ---
@@ -174,6 +174,49 @@ def test_start_game_no_enactment_when_election_fails(capsys):
     elected = sum(1 for line in out.splitlines() if line.startswith("Result: ELECTED"))
     enacted = sum(1 for line in out.splitlines() if line.startswith("Enacted:"))
     assert elected == enacted
+
+
+def test_start_game_force_roles_pins_assignment(capsys):
+    from src.game import Role
+
+    start_game(
+        rounds=1,
+        forced_roles=[Role.LIBERAL, Role.LIBERAL, Role.FASCIST, Role.LIBERAL, Role.HITLER],
+    )
+    out = capsys.readouterr().out
+    assert "Player 1: LIBERAL" in out
+    assert "Player 3: FASCIST" in out
+    assert "Player 5: HITLER" in out
+
+
+def test_start_game_start_tally_seeds_the_board(capsys):
+    start_game(rounds=1, start_tally=(2, 1))
+    out = capsys.readouterr().out
+    # If round 1 enacts a Liberal we'd see L=3 F=1; either way, never below 2/1.
+    import re
+
+    m = re.search(r"Tally:\s*L=(\d+)\s+F=(\d+)", out)
+    if m:
+        l, f = int(m.group(1)), int(m.group(2))
+        assert l >= 2 and f >= 1
+
+
+def test_start_game_stack_deck_controls_initial_draw(capsys):
+    from src.game import Role
+    from src.policies import Policy
+
+    # Stack deck so first 3 cards are F,F,F -> guaranteed F enactment if the
+    # first election passes. Pad to 17 cards (rest can be anything).
+    stack = [Policy.FASCIST] * 3 + [Policy.LIBERAL] * 6 + [Policy.FASCIST] * 8
+    start_game(
+        seed=42,
+        rounds=1,
+        forced_roles=[Role.LIBERAL, Role.LIBERAL, Role.FASCIST, Role.LIBERAL, Role.HITLER],
+        stack_deck=stack,
+    )
+    out = capsys.readouterr().out
+    if "Result: ELECTED" in out:
+        assert "Enacted: FASCIST" in out
 
 
 def test_start_game_tally_never_decreases(capsys):

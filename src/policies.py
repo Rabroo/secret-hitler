@@ -23,12 +23,26 @@ _FASCIST_COUNT = 11
 
 
 class PolicyDeck:
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(
+        self,
+        seed: Optional[int] = None,
+        *,
+        draw_pile: Optional[list[Policy]] = None,
+    ):
+        """If `draw_pile` is given, it overrides the default shuffled deck.
+
+        Pass cards in the order they should be drawn (first item = top of
+        deck = next draw). Internally we store the reverse of that so `pop()`
+        returns the right card.
+        """
         self._rng = random.Random(seed)
-        self._draw_pile: list[Policy] = [Policy.LIBERAL] * _LIBERAL_COUNT + [
-            Policy.FASCIST
-        ] * _FASCIST_COUNT
-        self._rng.shuffle(self._draw_pile)
+        if draw_pile is not None:
+            self._draw_pile = list(reversed(draw_pile))
+        else:
+            self._draw_pile = [Policy.LIBERAL] * _LIBERAL_COUNT + [
+                Policy.FASCIST
+            ] * _FASCIST_COUNT
+            self._rng.shuffle(self._draw_pile)
         self._discard_pile: list[Policy] = []
 
     @property

@@ -80,15 +80,28 @@ _FIVE_PLAYER_ROLES = [
 ]
 
 
-def assign_roles(num_players: int = 5, seed: Optional[int] = None) -> list[Player]:
-    """Randomly assign roles to `num_players` players (only 5 supported for now)."""
+def assign_roles(
+    num_players: int = 5,
+    seed: Optional[int] = None,
+    forced_roles: Optional[list[Role]] = None,
+) -> list[Player]:
+    """Assign roles to `num_players` players. Pass `forced_roles` to skip RNG."""
     if num_players != 5:
         raise NotImplementedError(
             f"Only 5-player games are supported; got {num_players}"
         )
-    rng = random.Random(seed)
-    roles = list(_FIVE_PLAYER_ROLES)
-    rng.shuffle(roles)
+    if forced_roles is not None:
+        if sorted(forced_roles, key=lambda r: r.value) != sorted(
+            _FIVE_PLAYER_ROLES, key=lambda r: r.value
+        ):
+            raise ValueError(
+                "forced_roles must contain exactly 3 Liberal, 1 Fascist, 1 Hitler"
+            )
+        roles = list(forced_roles)
+    else:
+        rng = random.Random(seed)
+        roles = list(_FIVE_PLAYER_ROLES)
+        rng.shuffle(roles)
     return [Player(id=i + 1, role=roles[i]) for i in range(num_players)]
 
 
@@ -175,6 +188,41 @@ def _remove_policy(hand: list[Policy], chosen: Policy) -> list[Policy]:
     remaining = list(hand)
     remaining.remove(chosen)
     return remaining
+
+
+_LIBERAL_ENACTION_DELTA = 0.2   # Liberal viewer becomes more confident the gov is Liberal
+_FASCIST_ENACTION_DELTA = -0.3  # Liberal viewer becomes more confident the gov is Fascist
+
+
+def update_predicted_roles_after_session(
+    state: GameState,
+    personalities: dict,
+    leg: "LegislativeSessionResult",
+    president: Player,
+    chancellor: Player,
+) -> None:
+    """Heuristic update of Liberal viewers' predicted_roles after an enacted policy.
+
+    Fascist team viewers know the truth and never update. The president and
+    chancellor don't update their own predictions of themselves. See
+    `specs/predicted_role_updates.md`.
+    """
+    delta = (
+        _LIBERAL_ENACTION_DELTA
+        if leg.enacted is Policy.LIBERAL
+        else _FASCIST_ENACTION_DELTA
+    )
+    gov_ids = {president.id, chancellor.id}
+    for viewer in state.players:
+        if viewer.role is not Role.LIBERAL:
+            continue
+        for target_id in gov_ids:
+            if target_id == viewer.id:
+                continue
+            current = personalities[viewer.id].predicted_roles.get(target_id, 0.0)
+            personalities[viewer.id].predicted_roles[target_id] = max(
+                -1.0, min(1.0, current + delta)
+            )
 
 
 def legislative_session(

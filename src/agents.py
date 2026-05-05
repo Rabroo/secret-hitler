@@ -20,6 +20,14 @@ from typing import Optional, Protocol
 from src.game import ChooseFn, DiscardFn, EnactFn, Player, VoteFn
 from src.personality import Personality
 from src.policies import Policy
+from src.prompts import (
+    discard_prompt,
+    enact_prompt,
+    nominate_prompt,
+    retry_prompt,
+    system_prompt,
+    vote_prompt,
+)
 
 
 _VALID_VOTES = {"ja": True, "nein": False}
@@ -86,74 +94,7 @@ class LLMAgent:
     last_discard_reasoning: str = ""
     last_enact_reasoning: str = ""
 
-    # --- prompt construction -------------------------------------------------
-
-    def _system_prompt(self) -> str:
-        opinion_lines = "\n".join(
-            f"  Player {pid}: {score:+.2f}"
-            for pid, score in sorted(self.personality.opinions.items())
-        )
-        roster = ", ".join(f"Player {p.id}" for p in self.all_players)
-        return (
-            f"You are Player {self.player.id} in a 5-player game of Secret Hitler.\n"
-            f"Your role: {self.player.role.value.upper()}.\n"
-            f"Your alignment desire (+1 wants Liberal outcomes .. -1 wants Fascist outcomes): "
-            f"{self.personality.desire:+.2f}.\n"
-            f"Your opinions of other players (-1 distrust .. +1 trust):\n"
-            f"{opinion_lines}\n"
-            f"Public roster: {roster}.\n\n"
-            "Rules summary:\n"
-            "- Liberals win by enacting 5 Liberal policies or executing Hitler.\n"
-            "- Fascists win by enacting 6 Fascist policies, or by electing Hitler "
-            "as Chancellor after 3 Fascist policies are enacted.\n"
-            "- Be strategic and stay in character. Never reveal your role unless "
-            "doing so helps you win.\n\n"
-            "You must reply with valid JSON only."
-        )
-
-    def _nominate_user_prompt(self, eligible: list[Player]) -> str:
-        ids = [p.id for p in eligible]
-        return (
-            "You are the President this round. Pick a Chancellor from the "
-            "eligible candidates.\n"
-            f"Eligible: {ids}\n"
-            'Reply as JSON: {"reasoning": "<one short sentence>", '
-            '"choice": <player id>}'
-        )
-
-    def _vote_user_prompt(self, president: Player, nominee: Player) -> str:
-        return (
-            f"The President is Player {president.id}. They nominated Player "
-            f"{nominee.id} as Chancellor. Vote on this government.\n"
-            'Reply as JSON: {"reasoning": "<one short sentence>", '
-            '"vote": "ja" | "nein"}'
-        )
-
-    def _discard_user_prompt(self, hand: list[Policy]) -> str:
-        indexed = ", ".join(
-            f"[{i}] {p.value.upper()}" for i, p in enumerate(hand)
-        )
-        return (
-            "You are the President. You drew 3 policies privately — only you "
-            "and the Chancellor (after your discard) will see them.\n"
-            f"Hand: {indexed}\n"
-            "Pick ONE index to discard. The other 2 go to the Chancellor.\n"
-            'Reply as JSON: {"reasoning": "<one short sentence>", '
-            '"discard_index": 0 | 1 | 2}'
-        )
-
-    def _enact_user_prompt(self, hand: list[Policy]) -> str:
-        indexed = ", ".join(
-            f"[{i}] {p.value.upper()}" for i, p in enumerate(hand)
-        )
-        return (
-            "You are the Chancellor. The President passed you 2 policies — "
-            "only you have seen these.\n"
-            f"Hand: {indexed}\n"
-            "Pick ONE index to ENACT. The other is discarded.\n"
-            'Reply as JSON: {"reasoning": "<one short sentence>", '
-            '"enact_index": 0 | 1}'
-        )
+    # Prompts now live in src/prompts.py — easier to find and tweak.
 
     # --- decisions -----------------------------------------------------------
 
@@ -161,8 +102,9 @@ class LLMAgent:
         if getattr(self.client, "is_exhausted", False):
             return self._discard_fallback(hand)
 
-        system = self._system_prompt()
-        user = self._discard_user_prompt(hand)
+        system = system_prompt(self.player, self.personality, self.all_players)
+        base_user = discard_prompt(hand)
+        user = base_user
 
         for _ in range(2):
             try:
@@ -175,10 +117,7 @@ class LLMAgent:
                 idx, reasoning = parsed
                 self.last_discard_reasoning = reasoning
                 return hand[idx]
-            user = (
-                "Your previous reply was invalid. "
-                + self._discard_user_prompt(hand)
-            )
+            user = retry_prompt(base_user, "expected discard_index 0..2")
 
         print(
             f"[agent] Player {self.player.id} LLM gave invalid discards twice; "
@@ -191,8 +130,9 @@ class LLMAgent:
         if getattr(self.client, "is_exhausted", False):
             return self._enact_fallback(hand)
 
-        system = self._system_prompt()
-        user = self._enact_user_prompt(hand)
+        system = system_prompt(self.player, self.personality, self.all_players)
+        base_user = enact_prompt(hand)
+        user = base_user
 
         for _ in range(2):
             try:
@@ -205,10 +145,7 @@ class LLMAgent:
                 idx, reasoning = parsed
                 self.last_enact_reasoning = reasoning
                 return hand[idx]
-            user = (
-                "Your previous reply was invalid. "
-                + self._enact_user_prompt(hand)
-            )
+            user = retry_prompt(base_user, "expected enact_index 0..1")
 
         print(
             f"[agent] Player {self.player.id} LLM gave invalid enactions twice; "
@@ -222,8 +159,9 @@ class LLMAgent:
             return self._nominate_fallback(eligible)
 
         eligible_ids = {p.id for p in eligible}
-        system = self._system_prompt()
-        user = self._nominate_user_prompt(eligible)
+        system = system_prompt(self.player, self.personality, self.all_players)
+        base_user = nominate_prompt(eligible)
+        user = base_user
 
         for _ in range(2):
             try:
@@ -236,10 +174,7 @@ class LLMAgent:
                 chosen_id, reasoning = parsed
                 self.last_nominate_reasoning = reasoning
                 return next(p for p in eligible if p.id == chosen_id)
-            user = (
-                "Your previous reply was invalid JSON or named an ineligible "
-                + f"player. {self._nominate_user_prompt(eligible)}"
-            )
+            user = retry_prompt(base_user, "ineligible choice or invalid JSON")
 
         print(
             f"[agent] Player {self.player.id} LLM gave invalid nominations twice; "
@@ -252,8 +187,9 @@ class LLMAgent:
         if getattr(self.client, "is_exhausted", False):
             return self._vote_fallback(president, nominee)
 
-        system = self._system_prompt()
-        user = self._vote_user_prompt(president, nominee)
+        system = system_prompt(self.player, self.personality, self.all_players)
+        base_user = vote_prompt(president, nominee)
+        user = base_user
 
         for _ in range(2):
             try:
@@ -266,10 +202,7 @@ class LLMAgent:
                 vote_value, reasoning = parsed
                 self.last_vote_reasoning = reasoning
                 return vote_value
-            user = (
-                "Your previous reply was invalid JSON or didn't say ja/nein. "
-                + self._vote_user_prompt(president, nominee)
-            )
+            user = retry_prompt(base_user, "didn't say ja/nein or invalid JSON")
 
         print(
             f"[agent] Player {self.player.id} LLM gave invalid votes twice; "
