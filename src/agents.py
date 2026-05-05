@@ -1,15 +1,20 @@
 """Player agents — random and LLM-backed — plus adapters that turn a
 `{player_id: PlayerAgent}` map into the engine's ChooseFn / VoteFn callbacks.
 
-See specs/agent_contracts.md and specs/llm_agent.md.
+Each agent stores `last_nominate_reasoning` and `last_vote_reasoning` strings
+so the dashboard renderer can show *why* the agent made its choice. For
+RandomAgent these are placeholders. For LLMAgent they come from JSON-mode
+responses: `{"reasoning": "...", "choice": <id> | "vote": "ja"|"nein"}`.
+
+See specs/agent_contracts.md, specs/llm_agent.md, specs/dashboard.md.
 """
 
 from __future__ import annotations
 
+import json
 import random
-import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from src.game import ChooseFn, Player, VoteFn
@@ -17,11 +22,15 @@ from src.personality import Personality
 
 
 _VALID_VOTES = {"ja": True, "nein": False}
-_INTEGER_RE = re.compile(r"\d+")
+_RANDOM_REASONING = "(random)"
+_FALLBACK_REASONING = "(LLM parse failure — random fallback)"
 
 
 class PlayerAgent(Protocol):
     """A player's brain. Owns its own identity and decides per-decision."""
+
+    last_nominate_reasoning: str
+    last_vote_reasoning: str
 
     def nominate(self, eligible: list[Player]) -> Player: ...
     def vote(self, president: Player, nominee: Player) -> bool: ...
@@ -31,15 +40,21 @@ class PlayerAgent(Protocol):
 class RandomAgent:
     player: Player
     seed: Optional[int] = None
+    last_nominate_reasoning: str = ""
+    last_vote_reasoning: str = ""
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.seed)
 
     def nominate(self, eligible: list[Player]) -> Player:
-        return self._rng.choice(eligible)
+        chosen = self._rng.choice(eligible)
+        self.last_nominate_reasoning = _RANDOM_REASONING
+        return chosen
 
     def vote(self, president: Player, nominee: Player) -> bool:
-        return self._rng.random() < 0.5
+        result = self._rng.random() < 0.5
+        self.last_vote_reasoning = _RANDOM_REASONING
+        return result
 
 
 @dataclass
@@ -49,6 +64,8 @@ class LLMAgent:
     all_players: list[Player]
     client: object  # LLMClient or compatible (FakeLLMClient in tests)
     fallback: PlayerAgent
+    last_nominate_reasoning: str = ""
+    last_vote_reasoning: str = ""
 
     # --- prompt construction -------------------------------------------------
 
@@ -63,7 +80,7 @@ class LLMAgent:
             f"Your role: {self.player.role.value.upper()}.\n"
             f"Your alignment desire (+1 wants Liberal outcomes .. -1 wants Fascist outcomes): "
             f"{self.personality.desire:+.2f}.\n"
-            f"Your initial opinions of other players (-1 distrust .. +1 trust):\n"
+            f"Your opinions of other players (-1 distrust .. +1 trust):\n"
             f"{opinion_lines}\n"
             f"Public roster: {roster}.\n\n"
             "Rules summary:\n"
@@ -71,7 +88,8 @@ class LLMAgent:
             "- Fascists win by enacting 6 Fascist policies, or by electing Hitler "
             "as Chancellor after 3 Fascist policies are enacted.\n"
             "- Be strategic and stay in character. Never reveal your role unless "
-            "doing so helps you win."
+            "doing so helps you win.\n\n"
+            "You must reply with valid JSON only."
         )
 
     def _nominate_user_prompt(self, eligible: list[Player]) -> str:
@@ -80,39 +98,42 @@ class LLMAgent:
             "You are the President this round. Pick a Chancellor from the "
             "eligible candidates.\n"
             f"Eligible: {ids}\n"
-            'Reply with ONLY the player number (e.g. "3"). No explanation.'
+            'Reply as JSON: {"reasoning": "<one short sentence>", '
+            '"choice": <player id>}'
         )
 
     def _vote_user_prompt(self, president: Player, nominee: Player) -> str:
         return (
             f"The President is Player {president.id}. They nominated Player "
-            f"{nominee.id} as Chancellor.\n"
-            "Vote ja or nein on this government.\n"
-            'Reply with ONLY one word: "ja" or "nein". No explanation.'
+            f"{nominee.id} as Chancellor. Vote on this government.\n"
+            'Reply as JSON: {"reasoning": "<one short sentence>", '
+            '"vote": "ja" | "nein"}'
         )
 
     # --- decisions -----------------------------------------------------------
 
     def nominate(self, eligible: list[Player]) -> Player:
         if getattr(self.client, "is_exhausted", False):
-            return self.fallback.nominate(eligible)
+            return self._nominate_fallback(eligible)
 
         eligible_ids = {p.id for p in eligible}
         system = self._system_prompt()
         user = self._nominate_user_prompt(eligible)
 
-        for attempt in range(2):
+        for _ in range(2):
             try:
-                reply = self.client.chat(system, user)
+                reply = self.client.chat(system, user, json_mode=True)
             except RuntimeError:
-                return self.fallback.nominate(eligible)
+                return self._nominate_fallback(eligible)
 
-            chosen_id = self._parse_player_id(reply, eligible_ids)
-            if chosen_id is not None:
+            parsed = self._parse_nominate_reply(reply, eligible_ids)
+            if parsed is not None:
+                chosen_id, reasoning = parsed
+                self.last_nominate_reasoning = reasoning
                 return next(p for p in eligible if p.id == chosen_id)
             user = (
-                "Your previous reply was invalid. "
-                + self._nominate_user_prompt(eligible)
+                "Your previous reply was invalid JSON or named an ineligible "
+                + f"player. {self._nominate_user_prompt(eligible)}"
             )
 
         print(
@@ -120,26 +141,28 @@ class LLMAgent:
             "falling back to random",
             file=sys.stderr,
         )
-        return self.fallback.nominate(eligible)
+        return self._nominate_fallback(eligible)
 
     def vote(self, president: Player, nominee: Player) -> bool:
         if getattr(self.client, "is_exhausted", False):
-            return self.fallback.vote(president, nominee)
+            return self._vote_fallback(president, nominee)
 
         system = self._system_prompt()
         user = self._vote_user_prompt(president, nominee)
 
-        for attempt in range(2):
+        for _ in range(2):
             try:
-                reply = self.client.chat(system, user)
+                reply = self.client.chat(system, user, json_mode=True)
             except RuntimeError:
-                return self.fallback.vote(president, nominee)
+                return self._vote_fallback(president, nominee)
 
-            parsed = self._parse_vote(reply)
+            parsed = self._parse_vote_reply(reply)
             if parsed is not None:
-                return parsed
+                vote_value, reasoning = parsed
+                self.last_vote_reasoning = reasoning
+                return vote_value
             user = (
-                "Your previous reply was invalid. "
+                "Your previous reply was invalid JSON or didn't say ja/nein. "
                 + self._vote_user_prompt(president, nominee)
             )
 
@@ -148,24 +171,58 @@ class LLMAgent:
             "falling back to random",
             file=sys.stderr,
         )
-        return self.fallback.vote(president, nominee)
+        return self._vote_fallback(president, nominee)
+
+    # --- fallbacks (annotate reasoning so the dashboard explains the source) -
+
+    def _nominate_fallback(self, eligible: list[Player]) -> Player:
+        chosen = self.fallback.nominate(eligible)
+        self.last_nominate_reasoning = _FALLBACK_REASONING
+        return chosen
+
+    def _vote_fallback(self, president: Player, nominee: Player) -> bool:
+        result = self.fallback.vote(president, nominee)
+        self.last_vote_reasoning = _FALLBACK_REASONING
+        return result
 
     # --- parsing -------------------------------------------------------------
 
     @staticmethod
-    def _parse_player_id(reply: str, allowed: set[int]) -> Optional[int]:
-        match = _INTEGER_RE.search(reply or "")
-        if match is None:
+    def _parse_nominate_reply(
+        reply: str, allowed: set[int]
+    ) -> Optional[tuple[int, str]]:
+        try:
+            data = json.loads(reply or "")
+        except (json.JSONDecodeError, TypeError):
             return None
-        candidate = int(match.group())
-        return candidate if candidate in allowed else None
+        if not isinstance(data, dict):
+            return None
+        choice = data.get("choice")
+        if not isinstance(choice, int) or choice not in allowed:
+            return None
+        reasoning = data.get("reasoning", "")
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        return choice, reasoning
 
     @staticmethod
-    def _parse_vote(reply: str) -> Optional[bool]:
-        token = (reply or "").strip().lower()
-        # Strip surrounding punctuation/quotes for tolerance.
-        token = token.strip(".,!\"'`* ")
-        return _VALID_VOTES.get(token)
+    def _parse_vote_reply(reply: str) -> Optional[tuple[bool, str]]:
+        try:
+            data = json.loads(reply or "")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        vote_raw = data.get("vote")
+        if not isinstance(vote_raw, str):
+            return None
+        vote_token = vote_raw.strip().lower().strip(".,!\"'`* ")
+        if vote_token not in _VALID_VOTES:
+            return None
+        reasoning = data.get("reasoning", "")
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        return _VALID_VOTES[vote_token], reasoning
 
 
 # --- adapters: agents -> engine callbacks ------------------------------------

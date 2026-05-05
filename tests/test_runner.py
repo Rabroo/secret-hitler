@@ -120,3 +120,30 @@ def test_start_game_term_limit_excludes_previous_elected_chancellor(capsys):
     )
     for prev, curr in zip(elected, elected[1:]):
         assert prev != curr, f"Same chancellor elected back-to-back: {prev}"
+
+
+# --- dashboard ---
+
+
+def test_start_game_no_dashboard_by_default(capsys):
+    start_game(seed=42, rounds=2)
+    out = capsys.readouterr().out
+    assert "DASHBOARD" not in out
+
+
+def test_start_game_dashboard_renders_each_round_with_dashboard_flag(capsys):
+    start_game(seed=42, rounds=3, dashboard=True)
+    out = capsys.readouterr().out
+    assert out.count("DASHBOARD — Round") == 3
+    # Every player should be listed under each dashboard block.
+    for r in range(1, 4):
+        # find this round's dashboard block; rough check
+        assert f"DASHBOARD — Round {r}" in out
+    for pid in range(1, 6):
+        assert f"Player {pid} (" in out
+
+
+def test_start_game_dashboard_shows_opinions(capsys):
+    start_game(seed=42, rounds=1, dashboard=True)
+    out = capsys.readouterr().out
+    assert "Opinions:" in out

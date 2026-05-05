@@ -29,7 +29,7 @@ from src.game import (
     nominate_chancellor,
     vote_chancellor,
 )
-from src.personality import build_personalities
+from src.personality import Personality, build_personalities
 
 
 _DIVIDER = "=" * 60
@@ -85,6 +85,46 @@ def _render_operator_view(players: list[Player]) -> str:
     return "\n".join(lines)
 
 
+def _render_dashboard(
+    round_num: int,
+    players: list[Player],
+    agents: dict[int, PlayerAgent],
+    personalities: dict[int, Personality],
+    president: Player,
+    nominee: Player,
+) -> str:
+    lines = [
+        _DIVIDER,
+        f"DASHBOARD — Round {round_num}",
+        _DIVIDER,
+    ]
+    for p in players:
+        agent = agents[p.id]
+        tags = []
+        if p.id == president.id:
+            tags.append("*President*")
+        if p.id == nominee.id:
+            tags.append("*Chancellor nominee*")
+        if not p.alive:
+            tags.append("(dead)")
+        tag_suffix = ("  " + " ".join(tags)) if tags else ""
+        lines.append(f"\nPlayer {p.id} ({p.role.value.upper()}){tag_suffix}")
+        if p.id == president.id and agent.last_nominate_reasoning:
+            lines.append(f"  Nominate: Player {nominee.id}")
+            lines.append(f'    "{agent.last_nominate_reasoning}"')
+        if p.alive and agent.last_vote_reasoning:
+            lines.append(f'  Vote reasoning: "{agent.last_vote_reasoning}"')
+        # Opinions snapshot — currently static; will move once event-driven
+        # opinion updates are built.
+        opinions_str = "  ".join(
+            f"{pid}:{score:+.2f}"
+            for pid, score in sorted(personalities[p.id].opinions.items())
+        )
+        lines.append(f"  Opinions: {opinions_str}")
+    lines.append(_DIVIDER)
+    return "\n".join(lines)
+
+
 def _render_round(
     round_num: int,
     president: Player,
@@ -114,11 +154,13 @@ def start_game(
     agents_mode: str = _DEFAULT_AGENTS,
     model: str = _DEFAULT_MODEL,
     token_budget: int = _DEFAULT_TOKEN_BUDGET,
+    dashboard: bool = False,
 ) -> GameState:
     players = assign_roles(seed=seed)
     print(_render_operator_view(players))
 
     agents = _build_agents(agents_mode, players, seed, model, token_budget)
+    personalities = build_personalities(players)
     choose = make_choose_fn(agents)
     vote = make_vote_fn(agents)
 
@@ -130,6 +172,18 @@ def start_game(
         chosen = nominate_chancellor(state, choose)
         result = vote_chancellor(state, chosen, vote)
         print(_render_round(round_num, president, candidates, chosen, result))
+
+        if dashboard:
+            print(
+                _render_dashboard(
+                    round_num=round_num,
+                    players=players,
+                    agents=agents,
+                    personalities=personalities,
+                    president=president,
+                    nominee=chosen,
+                )
+            )
 
         if result.passed:
             state.last_elected_president_id = president.id
@@ -163,6 +217,11 @@ def main() -> None:
         default=_DEFAULT_TOKEN_BUDGET,
         help="Hard cap on total tokens before agents fall back to random",
     )
+    start.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Print each player's reasoning and current opinions after each round",
+    )
 
     args = parser.parse_args()
     if args.command == "start":
@@ -172,6 +231,7 @@ def main() -> None:
             agents_mode=args.agents,
             model=args.model,
             token_budget=args.token_budget,
+            dashboard=args.dashboard,
         )
 
 

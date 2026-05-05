@@ -48,18 +48,21 @@ class LLMClient:
     def is_exhausted(self) -> bool:
         return self.tokens_used >= self.token_budget
 
-    def chat(self, system: str, user: str) -> str:
+    def chat(self, system: str, user: str, json_mode: bool = False) -> str:
         if self.is_exhausted:
             raise RuntimeError("LLM token budget exhausted")
         # Note: we deliberately don't pass `temperature` — newer OpenAI models
         # (gpt-5 family, o-series) reject any value other than the default.
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
+        request: dict = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-        )
+        }
+        if json_mode:
+            request["response_format"] = {"type": "json_object"}
+        response = self._client.chat.completions.create(**request)
         usage = getattr(response, "usage", None)
         if usage is not None and getattr(usage, "total_tokens", None) is not None:
             self.tokens_used += usage.total_tokens

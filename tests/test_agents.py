@@ -1,6 +1,5 @@
+import json
 from collections import deque
-
-import pytest
 
 from src.agents import (
     LLMAgent,
@@ -12,20 +11,30 @@ from src.game import GameState, Player, Role, assign_roles
 from src.personality import build_personalities
 
 
-# --- FakeLLMClient: scripted replies, no network ---
+# --- FakeLLMClient: scripted JSON replies, no network ---
 
 
 class FakeLLMClient:
     def __init__(self, replies):
+        # Each reply is a string the client will return verbatim. Tests pass
+        # JSON strings to mirror real LLM responses with response_format=json.
         self.replies = deque(replies)
         self.calls = []
         self.is_exhausted = False
 
-    def chat(self, system, user):
-        self.calls.append({"system": system, "user": user})
+    def chat(self, system, user, json_mode=False):
+        self.calls.append({"system": system, "user": user, "json_mode": json_mode})
         if not self.replies:
             raise AssertionError("FakeLLMClient ran out of scripted replies")
         return self.replies.popleft()
+
+
+def _nom(reasoning: str, choice: int) -> str:
+    return json.dumps({"reasoning": reasoning, "choice": choice})
+
+
+def _vote(reasoning: str, vote: str) -> str:
+    return json.dumps({"reasoning": reasoning, "vote": vote})
 
 
 # --- RandomAgent ---
@@ -55,6 +64,15 @@ def test_random_agent_is_deterministic_for_same_seed():
     assert a.vote(players[1], players[2]) == b.vote(players[1], players[2])
 
 
+def test_random_agent_populates_reasoning_placeholder():
+    players = assign_roles(seed=1)
+    agent = RandomAgent(player=players[0], seed=1)
+    agent.nominate(players[1:])
+    agent.vote(players[1], players[2])
+    assert agent.last_nominate_reasoning != ""
+    assert agent.last_vote_reasoning != ""
+
+
 # --- adapters: agents -> ChooseFn / VoteFn ---
 
 
@@ -75,11 +93,11 @@ def test_make_vote_fn_dispatches_to_voter_agent():
     assert isinstance(result, bool)
 
 
-# --- LLMAgent: prompt + parsing ---
+# --- LLMAgent: JSON prompt + parsing ---
 
 
 def _make_llm_agent(player, replies, all_players):
-    pers = build_personalities(all_players, seed=1)[player.id]
+    pers = build_personalities(all_players)[player.id]
     fallback = RandomAgent(player=player, seed=999)
     client = FakeLLMClient(replies)
     return LLMAgent(
@@ -93,25 +111,31 @@ def _make_llm_agent(player, replies, all_players):
 
 def test_llm_agent_nominate_returns_choice_in_eligible():
     players = assign_roles(seed=1)
-    agent, _ = _make_llm_agent(players[0], replies=["3"], all_players=players)
+    agent, _ = _make_llm_agent(
+        players[0], replies=[_nom("known ally", 3)], all_players=players
+    )
     chosen = agent.nominate(players[1:])
     assert chosen.id == 3
 
 
-def test_llm_agent_nominate_extracts_integer_from_messy_reply():
+def test_llm_agent_nominate_stores_reasoning():
     players = assign_roles(seed=1)
     agent, _ = _make_llm_agent(
-        players[0], replies=["I pick Player 4 because..."], all_players=players
+        players[0],
+        replies=[_nom("Player 3 is my known ally", 3)],
+        all_players=players,
     )
-    chosen = agent.nominate(players[1:])
-    assert chosen.id == 4
+    agent.nominate(players[1:])
+    assert "known ally" in agent.last_nominate_reasoning
 
 
 def test_llm_agent_nominate_retries_on_invalid_then_succeeds():
     players = assign_roles(seed=1)
-    # First reply illegal (1 is not in eligible), second reply valid
+    # First reply has illegal choice (1 is the President), second is valid
     agent, client = _make_llm_agent(
-        players[0], replies=["1", "2"], all_players=players
+        players[0],
+        replies=[_nom("oops", 1), _nom("valid pick", 2)],
+        all_players=players,
     )
     chosen = agent.nominate(players[1:])
     assert chosen.id == 2
@@ -122,36 +146,58 @@ def test_llm_agent_nominate_falls_back_after_two_failures():
     players = assign_roles(seed=1)
     agent, client = _make_llm_agent(
         players[0],
-        replies=["banana", "still nonsense"],
+        replies=["not even json", '{"choice": "banana"}'],
         all_players=players,
     )
     chosen = agent.nominate(players[1:])
-    assert chosen in players[1:]  # fell back to random
+    assert chosen in players[1:]
     assert len(client.calls) == 2
+    assert "fallback" in agent.last_nominate_reasoning.lower()
 
 
 def test_llm_agent_vote_parses_ja():
     players = assign_roles(seed=1)
-    agent, _ = _make_llm_agent(players[0], replies=["ja"], all_players=players)
+    agent, _ = _make_llm_agent(
+        players[0], replies=[_vote("looks fine", "ja")], all_players=players
+    )
     assert agent.vote(players[1], players[2]) is True
 
 
 def test_llm_agent_vote_parses_nein():
     players = assign_roles(seed=1)
-    agent, _ = _make_llm_agent(players[0], replies=["nein"], all_players=players)
+    agent, _ = _make_llm_agent(
+        players[0], replies=[_vote("don't trust them", "nein")], all_players=players
+    )
     assert agent.vote(players[1], players[2]) is False
 
 
 def test_llm_agent_vote_case_insensitive():
     players = assign_roles(seed=1)
-    agent, _ = _make_llm_agent(players[0], replies=["  JA  "], all_players=players)
+    agent, _ = _make_llm_agent(
+        players[0],
+        replies=[json.dumps({"reasoning": "ok", "vote": "  JA  "})],
+        all_players=players,
+    )
     assert agent.vote(players[1], players[2]) is True
+
+
+def test_llm_agent_vote_stores_reasoning():
+    players = assign_roles(seed=1)
+    agent, _ = _make_llm_agent(
+        players[0],
+        replies=[_vote("president looks suspicious", "nein")],
+        all_players=players,
+    )
+    agent.vote(players[1], players[2])
+    assert "suspicious" in agent.last_vote_reasoning
 
 
 def test_llm_agent_vote_retries_on_invalid_then_succeeds():
     players = assign_roles(seed=1)
     agent, client = _make_llm_agent(
-        players[0], replies=["maybe", "nein"], all_players=players
+        players[0],
+        replies=[_vote("hmm", "maybe"), _vote("ok", "nein")],
+        all_players=players,
     )
     assert agent.vote(players[1], players[2]) is False
     assert len(client.calls) == 2
@@ -160,7 +206,9 @@ def test_llm_agent_vote_retries_on_invalid_then_succeeds():
 def test_llm_agent_vote_falls_back_after_two_failures():
     players = assign_roles(seed=1)
     agent, client = _make_llm_agent(
-        players[0], replies=["???", "still ???"], all_players=players
+        players[0],
+        replies=["not json", '{"vote": null}'],
+        all_players=players,
     )
     result = agent.vote(players[1], players[2])
     assert isinstance(result, bool)
@@ -175,15 +223,24 @@ def test_llm_agent_skips_api_when_budget_exhausted():
     client.is_exhausted = True
     chosen = agent.nominate(players[1:])
     assert chosen in players[1:]
-    assert len(client.calls) == 0  # never hit the API
+    assert len(client.calls) == 0
 
 
 def test_llm_agent_system_prompt_includes_role_and_personality():
     players = assign_roles(seed=1)
     agent, client = _make_llm_agent(
-        players[0], replies=["2"], all_players=players
+        players[0], replies=[_nom("ok", 2)], all_players=players
     )
     agent.nominate(players[1:])
     system = client.calls[0]["system"]
     assert f"Player {players[0].id}" in system
     assert players[0].role.value.upper() in system or players[0].role.value in system.lower()
+
+
+def test_llm_agent_calls_with_json_mode():
+    players = assign_roles(seed=1)
+    agent, client = _make_llm_agent(
+        players[0], replies=[_nom("ok", 2)], all_players=players
+    )
+    agent.nominate(players[1:])
+    assert client.calls[0]["json_mode"] is True
