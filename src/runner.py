@@ -1,17 +1,24 @@
 """CLI runner for Secret Hitler LLM.
 
-Currently boots a 5-player game, prints an operator-view roster (visible
-only to the human running the simulation — once LLMs are wired in, each
-LLM will only see its own role), and runs N nomination rounds with the
-presidency rotating in seat order.
+Boots a 5-player game, prints an operator-view roster, and runs N rounds of
+nomination + ja/nein election with the presidency rotating in seat order.
+
+Player decisions go through a `{player_id: PlayerAgent}` map. By default every
+agent is a seeded RandomAgent (free, deterministic). Pass `--agents llm` to use
+LLM-backed agents (requires OPENAI_API_KEY in .env).
 """
 
 from __future__ import annotations
 
 import argparse
-import random
-from typing import Callable
 
+from src.agents import (
+    LLMAgent,
+    PlayerAgent,
+    RandomAgent,
+    make_choose_fn,
+    make_vote_fn,
+)
 from src.game import (
     ElectionResult,
     GameState,
@@ -22,22 +29,48 @@ from src.game import (
     nominate_chancellor,
     vote_chancellor,
 )
+from src.personality import build_personalities
 
 
 _DIVIDER = "=" * 60
 _DEFAULT_ROUNDS = 8
+_DEFAULT_AGENTS = "random"
+_DEFAULT_MODEL = "gpt-5-mini"
+_DEFAULT_TOKEN_BUDGET = 50_000
 
 
-def _random_choose_fn(seed: int | None) -> Callable[[Player, list[Player]], Player]:
-    rng = random.Random(seed)
-    return lambda _president, candidates: rng.choice(candidates)
+def _build_agents(
+    mode: str,
+    players: list[Player],
+    seed: int | None,
+    model: str,
+    token_budget: int,
+) -> dict[int, PlayerAgent]:
+    if mode == "random":
+        # Each player gets its own seeded RNG stream derived from the master seed.
+        return {
+            p.id: RandomAgent(player=p, seed=None if seed is None else seed + p.id)
+            for p in players
+        }
+    if mode == "llm":
+        from src.llm_client import LLMClient, load_dotenv_if_present
 
-
-def _random_vote_fn(seed: int | None) -> Callable[[Player, Player, Player], bool]:
-    # Separate stream from the choose_fn so role-shuffle, nomination, and votes
-    # don't pull from a shared sequence.
-    rng = random.Random(None if seed is None else seed + 1)
-    return lambda _voter, _president, _nominee: rng.random() < 0.5
+        load_dotenv_if_present()
+        client = LLMClient(model=model, token_budget=token_budget)
+        personalities = build_personalities(players, seed=seed)
+        return {
+            p.id: LLMAgent(
+                player=p,
+                personality=personalities[p.id],
+                all_players=players,
+                client=client,
+                fallback=RandomAgent(
+                    player=p, seed=None if seed is None else seed + p.id
+                ),
+            )
+            for p in players
+        }
+    raise ValueError(f"Unknown agents mode: {mode!r}. Use 'random' or 'llm'.")
 
 
 def _render_operator_view(players: list[Player]) -> str:
@@ -78,14 +111,18 @@ def _render_round(
 def start_game(
     seed: int | None = None,
     rounds: int = _DEFAULT_ROUNDS,
+    agents_mode: str = _DEFAULT_AGENTS,
+    model: str = _DEFAULT_MODEL,
+    token_budget: int = _DEFAULT_TOKEN_BUDGET,
 ) -> GameState:
-    """Run a stub game: assign roles, then rotate the presidency for N rounds."""
     players = assign_roles(seed=seed)
     print(_render_operator_view(players))
 
+    agents = _build_agents(agents_mode, players, seed, model, token_budget)
+    choose = make_choose_fn(agents)
+    vote = make_vote_fn(agents)
+
     state = GameState(players=players, president_idx=0)
-    choose = _random_choose_fn(seed=seed)
-    vote = _random_vote_fn(seed=seed)
 
     for round_num in range(1, rounds + 1):
         president = state.players[state.president_idx]
@@ -109,10 +146,33 @@ def main() -> None:
     start = sub.add_parser("start", help="Start a new game")
     start.add_argument("--seed", type=int, default=None)
     start.add_argument("--rounds", type=int, default=_DEFAULT_ROUNDS)
+    start.add_argument(
+        "--agents",
+        choices=["random", "llm"],
+        default=_DEFAULT_AGENTS,
+        help="random (free, default) or llm (requires OPENAI_API_KEY)",
+    )
+    start.add_argument(
+        "--model",
+        default=_DEFAULT_MODEL,
+        help="OpenAI model id, only used with --agents llm",
+    )
+    start.add_argument(
+        "--token-budget",
+        type=int,
+        default=_DEFAULT_TOKEN_BUDGET,
+        help="Hard cap on total tokens before agents fall back to random",
+    )
 
     args = parser.parse_args()
     if args.command == "start":
-        start_game(seed=args.seed, rounds=args.rounds)
+        start_game(
+            seed=args.seed,
+            rounds=args.rounds,
+            agents_mode=args.agents,
+            model=args.model,
+            token_budget=args.token_budget,
+        )
 
 
 if __name__ == "__main__":

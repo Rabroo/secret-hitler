@@ -6,23 +6,21 @@ def _by_role(players, role):
     return [p for p in players if p.role is role]
 
 
-def test_liberal_desire_is_negative():
+def test_liberal_desire_is_exactly_plus_one():
+    # Sign convention: +1 = Liberal-aligned, -1 = Fascist-aligned. No noise.
     players = assign_roles(seed=1)
     pers = build_personalities(players, seed=1)
     for p in _by_role(players, Role.LIBERAL):
-        assert pers[p.id].desire < 0
-        assert pers[p.id].desire >= -1.0
+        assert pers[p.id].desire == 1.0
 
 
-def test_fascist_and_hitler_desire_is_positive():
+def test_fascist_and_hitler_desire_is_exactly_minus_one():
     players = assign_roles(seed=1)
     pers = build_personalities(players, seed=1)
     for p in _by_role(players, Role.FASCIST):
-        assert pers[p.id].desire > 0
-        assert pers[p.id].desire <= 1.0
+        assert pers[p.id].desire == -1.0
     for p in _by_role(players, Role.HITLER):
-        assert pers[p.id].desire > 0
-        assert pers[p.id].desire <= 1.0
+        assert pers[p.id].desire == -1.0
 
 
 def test_personality_self_not_in_opinions():
@@ -48,25 +46,28 @@ def test_opinions_clamped_to_unit_range():
             assert -1.0 <= v <= 1.0
 
 
-def test_liberal_initial_opinions_are_near_zero():
+def test_liberal_initial_opinions_are_exactly_zero():
     players = assign_roles(seed=1)
     pers = build_personalities(players, seed=1)
     for p in _by_role(players, Role.LIBERAL):
         for v in pers[p.id].opinions.values():
-            assert abs(v) < 0.2  # noise band only
+            assert v == 0.0
 
 
-def test_fascist_team_mutually_recognises_at_5p():
+def test_fascist_team_mutually_recognises_at_5p_with_full_trust():
     players = assign_roles(seed=1)
     pers = build_personalities(players, seed=1)
     fascists = _by_role(players, Role.FASCIST)
     hitlers = _by_role(players, Role.HITLER)
     assert len(fascists) == 1 and len(hitlers) == 1
     fascist, hitler = fascists[0], hitlers[0]
-    # Fascist trusts Hitler
-    assert pers[fascist.id].opinions[hitler.id] > 0.5
-    # Hitler trusts Fascist (5p rule)
-    assert pers[hitler.id].opinions[fascist.id] > 0.5
+    # Exact +1.0: complete trust between confirmed allies, no noise.
+    assert pers[fascist.id].opinions[hitler.id] == 1.0
+    assert pers[hitler.id].opinions[fascist.id] == 1.0
+    # Their opinions of liberals stay at exactly 0.0.
+    for liberal in _by_role(players, Role.LIBERAL):
+        assert pers[fascist.id].opinions[liberal.id] == 0.0
+        assert pers[hitler.id].opinions[liberal.id] == 0.0
 
 
 def test_personality_is_deterministic_for_same_seed():
