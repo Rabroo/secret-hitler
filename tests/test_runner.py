@@ -147,3 +147,47 @@ def test_start_game_dashboard_shows_opinions(capsys):
     start_game(seed=42, rounds=1, dashboard=True)
     out = capsys.readouterr().out
     assert "Opinions:" in out
+
+
+# --- legislative session integration ---
+
+
+def test_start_game_runs_legislative_session_after_passing_election(capsys):
+    start_game(seed=42, rounds=8)
+    out = capsys.readouterr().out
+    # At least one election should pass at this seed and trigger an enactment.
+    assert "Enacted:" in out
+
+
+def test_start_game_prints_running_tally(capsys):
+    start_game(seed=42, rounds=8)
+    out = capsys.readouterr().out
+    # Tally line should show after each enacted round.
+    assert "Tally:" in out
+
+
+def test_start_game_no_enactment_when_election_fails(capsys):
+    # Force every vote to fail by overriding the start_game internals: we do it
+    # by parsing output — count Enacted lines vs ELECTED rounds; should be equal.
+    start_game(seed=42, rounds=12)
+    out = capsys.readouterr().out
+    elected = sum(1 for line in out.splitlines() if line.startswith("Result: ELECTED"))
+    enacted = sum(1 for line in out.splitlines() if line.startswith("Enacted:"))
+    assert elected == enacted
+
+
+def test_start_game_tally_never_decreases(capsys):
+    start_game(seed=42, rounds=8)
+    out = capsys.readouterr().out
+    # Extract tallies in order; both counts should be monotonic non-decreasing.
+    import re
+
+    pairs: list[tuple[int, int]] = []
+    for line in out.splitlines():
+        m = re.search(r"Tally:\s*L=(\d+)\s+F=(\d+)", line)
+        if m:
+            pairs.append((int(m.group(1)), int(m.group(2))))
+    assert len(pairs) >= 1
+    for prev, curr in zip(pairs, pairs[1:]):
+        assert curr[0] >= prev[0]
+        assert curr[1] >= prev[1]

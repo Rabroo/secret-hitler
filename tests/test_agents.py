@@ -5,10 +5,13 @@ from src.agents import (
     LLMAgent,
     RandomAgent,
     make_choose_fn,
+    make_discard_fn,
+    make_enact_fn,
     make_vote_fn,
 )
 from src.game import GameState, Player, Role, assign_roles
 from src.personality import build_personalities
+from src.policies import Policy
 
 
 # --- FakeLLMClient: scripted JSON replies, no network ---
@@ -35,6 +38,14 @@ def _nom(reasoning: str, choice: int) -> str:
 
 def _vote(reasoning: str, vote: str) -> str:
     return json.dumps({"reasoning": reasoning, "vote": vote})
+
+
+def _discard(reasoning: str, idx: int) -> str:
+    return json.dumps({"reasoning": reasoning, "discard_index": idx})
+
+
+def _enact(reasoning: str, idx: int) -> str:
+    return json.dumps({"reasoning": reasoning, "enact_index": idx})
 
 
 # --- RandomAgent ---
@@ -69,8 +80,28 @@ def test_random_agent_populates_reasoning_placeholder():
     agent = RandomAgent(player=players[0], seed=1)
     agent.nominate(players[1:])
     agent.vote(players[1], players[2])
+    agent.discard_policy([Policy.FASCIST, Policy.LIBERAL, Policy.FASCIST])
+    agent.enact_policy([Policy.FASCIST, Policy.LIBERAL])
     assert agent.last_nominate_reasoning != ""
     assert agent.last_vote_reasoning != ""
+    assert agent.last_discard_reasoning != ""
+    assert agent.last_enact_reasoning != ""
+
+
+def test_random_agent_discard_returns_policy_in_hand():
+    players = assign_roles(seed=1)
+    agent = RandomAgent(player=players[0], seed=1)
+    hand = [Policy.FASCIST, Policy.LIBERAL, Policy.FASCIST]
+    chosen = agent.discard_policy(hand)
+    assert chosen in hand
+
+
+def test_random_agent_enact_returns_policy_in_hand():
+    players = assign_roles(seed=1)
+    agent = RandomAgent(player=players[0], seed=1)
+    hand = [Policy.FASCIST, Policy.LIBERAL]
+    chosen = agent.enact_policy(hand)
+    assert chosen in hand
 
 
 # --- adapters: agents -> ChooseFn / VoteFn ---
@@ -91,6 +122,24 @@ def test_make_vote_fn_dispatches_to_voter_agent():
     vote = make_vote_fn(agents)
     result = vote(players[2], players[0], players[1])
     assert isinstance(result, bool)
+
+
+def test_make_discard_fn_dispatches_to_president_agent():
+    players = assign_roles(seed=1)
+    agents = {p.id: RandomAgent(player=p, seed=p.id) for p in players}
+    discard = make_discard_fn(agents)
+    hand = [Policy.FASCIST, Policy.LIBERAL, Policy.FASCIST]
+    chosen = discard(players[0], hand)
+    assert chosen in hand
+
+
+def test_make_enact_fn_dispatches_to_chancellor_agent():
+    players = assign_roles(seed=1)
+    agents = {p.id: RandomAgent(player=p, seed=p.id) for p in players}
+    enact = make_enact_fn(agents)
+    hand = [Policy.FASCIST, Policy.LIBERAL]
+    chosen = enact(players[1], hand)
+    assert chosen in hand
 
 
 # --- LLMAgent: JSON prompt + parsing ---
@@ -244,3 +293,102 @@ def test_llm_agent_calls_with_json_mode():
     )
     agent.nominate(players[1:])
     assert client.calls[0]["json_mode"] is True
+
+
+# --- LLMAgent: policy discard / enact ---
+
+
+def test_llm_agent_discard_returns_indexed_policy():
+    players = assign_roles(seed=1)
+    agent, _ = _make_llm_agent(
+        players[0],
+        replies=[_discard("toss the liberal", 2)],
+        all_players=players,
+    )
+    hand = [Policy.FASCIST, Policy.FASCIST, Policy.LIBERAL]
+    chosen = agent.discard_policy(hand)
+    assert chosen is Policy.LIBERAL
+
+
+def test_llm_agent_discard_stores_reasoning():
+    players = assign_roles(seed=1)
+    agent, _ = _make_llm_agent(
+        players[0],
+        replies=[_discard("burying the liberal", 2)],
+        all_players=players,
+    )
+    agent.discard_policy([Policy.FASCIST, Policy.FASCIST, Policy.LIBERAL])
+    assert "burying" in agent.last_discard_reasoning
+
+
+def test_llm_agent_discard_retries_on_out_of_range_index():
+    players = assign_roles(seed=1)
+    agent, client = _make_llm_agent(
+        players[0],
+        replies=[_discard("oops", 7), _discard("ok", 0)],
+        all_players=players,
+    )
+    chosen = agent.discard_policy([Policy.FASCIST, Policy.LIBERAL, Policy.LIBERAL])
+    assert chosen is Policy.FASCIST
+    assert len(client.calls) == 2
+
+
+def test_llm_agent_discard_falls_back_after_two_failures():
+    players = assign_roles(seed=1)
+    agent, client = _make_llm_agent(
+        players[0],
+        replies=["not json", '{"discard_index": "nope"}'],
+        all_players=players,
+    )
+    hand = [Policy.FASCIST, Policy.LIBERAL, Policy.FASCIST]
+    chosen = agent.discard_policy(hand)
+    assert chosen in hand
+    assert len(client.calls) == 2
+    assert "fallback" in agent.last_discard_reasoning.lower()
+
+
+def test_llm_agent_enact_returns_indexed_policy():
+    players = assign_roles(seed=1)
+    agent, _ = _make_llm_agent(
+        players[0],
+        replies=[_enact("enacting the liberal", 1)],
+        all_players=players,
+    )
+    chosen = agent.enact_policy([Policy.FASCIST, Policy.LIBERAL])
+    assert chosen is Policy.LIBERAL
+
+
+def test_llm_agent_enact_stores_reasoning():
+    players = assign_roles(seed=1)
+    agent, _ = _make_llm_agent(
+        players[0],
+        replies=[_enact("liberal best", 1)],
+        all_players=players,
+    )
+    agent.enact_policy([Policy.FASCIST, Policy.LIBERAL])
+    assert "liberal" in agent.last_enact_reasoning.lower()
+
+
+def test_llm_agent_enact_retries_on_out_of_range_index():
+    players = assign_roles(seed=1)
+    agent, client = _make_llm_agent(
+        players[0],
+        replies=[_enact("oops", 7), _enact("ok", 0)],
+        all_players=players,
+    )
+    chosen = agent.enact_policy([Policy.LIBERAL, Policy.FASCIST])
+    assert chosen is Policy.LIBERAL
+    assert len(client.calls) == 2
+
+
+def test_llm_agent_enact_falls_back_after_two_failures():
+    players = assign_roles(seed=1)
+    agent, client = _make_llm_agent(
+        players[0],
+        replies=["not json", '{"enact_index": null}'],
+        all_players=players,
+    )
+    hand = [Policy.FASCIST, Policy.LIBERAL]
+    chosen = agent.enact_policy(hand)
+    assert chosen in hand
+    assert len(client.calls) == 2
