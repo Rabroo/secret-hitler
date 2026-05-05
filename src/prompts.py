@@ -30,6 +30,7 @@ Public roster: {roster}.
 Rules summary:
 - Liberals win by enacting 5 Liberal policies or executing Hitler.
 - Fascists win by enacting 6 Fascist policies, or by electing Hitler as Chancellor after 3 Fascist policies are enacted.
+- 5-player term limit: only the previous *Chancellor* is term-limited; the previous President is still eligible to be Chancellor next round.
 - Be strategic and stay in character. Never reveal your role unless doing so helps you win.{role_hint}
 
 You must reply with valid JSON only."""
@@ -37,24 +38,38 @@ You must reply with valid JSON only."""
 
 _LIBERAL_HINT = (
     "\n- As a Liberal, you start with no information. Use voting and policy "
-    "enactions in the GAME HISTORY above to update your predictions. Don't "
-    "trust governments that produce Fascist policies."
+    "enactions in the GAME HISTORY above to update your predictions. Distrust "
+    "governments that produce Fascist policies. With the deck at 11 Fascist "
+    "vs 6 Liberal, a Liberal enaction is a meaningful trust signal."
 )
 
 _FASCIST_HINT = (
-    "\n- As a Fascist, you know who Hitler is (named above). Don't openly "
-    "support Hitler — Liberals will spot the pattern. Early-game, act like "
-    "a Liberal: vote moderately, claim Liberal policies. Bury your alignment "
-    "until you've built cover. Help Hitler get Chancellor *after* 3 Fascist "
-    "policies are enacted — that wins the game for your team."
+    "\n- As a Fascist, your job is to ENACT FASCIST POLICIES and protect Hitler. "
+    "Cover matters but it is NOT the goal — the goal is winning. Concretely:\n"
+    "  * As President with a hand of 3, prefer to discard a LIBERAL so the "
+    "Chancellor's hand contains a Fascist they can enact (or a forced double-"
+    "Fascist hand). Discarding a Fascist actively helps the enemy team and "
+    "should only happen when you genuinely need cover.\n"
+    "  * As Chancellor with a Fascist+Liberal hand, enact the FASCIST when you "
+    "can plausibly blame the President's draw.\n"
+    "  * Vote ja on governments that contain Hitler once F>=3 is on the board.\n"
+    "  * Don't openly nominate Hitler in the first 2 rounds — Liberals notice. "
+    "After cover is built, push Hitler into the Chancellor seat at F>=3."
 )
 
 _HITLER_HINT = (
-    "\n- As Hitler, stay quiet and undercover. Don't seek the Chancellor "
-    "seat early — getting elected with 3+ Fascist policies on the board "
-    "wins the game for your team, but only after Liberals stop suspecting "
-    "you. Mimic Liberal play in early rounds. Quietly support your "
-    "Fascist teammate's governments without making the support obvious."
+    "\n- As Hitler, you are on the FASCIST team and you win when the Fascist "
+    "team wins. Cover is your priority, but cover is not pacifism — you also "
+    "need to actively enable Fascist enactions:\n"
+    "  * As President with 3 cards, prefer to discard a Liberal so the "
+    "Chancellor's hand allows a Fascist enaction. Pretend to a 'forced' line.\n"
+    "  * Don't volunteer for the Chancellor seat early. Once F>=3, getting "
+    "elected Chancellor wins the game for your team — that is the moment to "
+    "say yes.\n"
+    "  * Vote ja on your Fascist teammate's governments, especially when the "
+    "tally pressures Liberals (e.g., Liberals at 4 — block their last policy).\n"
+    "  * 'Mimic Liberal play' means tone, not goals: you can vocally complain "
+    "about Fascist policies even after enacting them."
 )
 
 _ROLE_HINTS = {

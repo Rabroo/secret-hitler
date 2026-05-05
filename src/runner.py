@@ -23,6 +23,7 @@ from src.agents import (
 )
 from src.game import (
     ElectionResult,
+    Faction,
     GameState,
     LegislativeSessionResult,
     Player,
@@ -30,6 +31,7 @@ from src.game import (
     RoundEvent,
     advance_presidency,
     assign_roles,
+    check_winner,
     eligible_chancellors,
     legislative_session,
     nominate_chancellor,
@@ -304,10 +306,30 @@ def start_game(
 
         leg: LegislativeSessionResult | None = None
         if result.passed:
-            leg = legislative_session(state, deck, president, chosen, discard, enact)
-            update_predicted_roles_after_session(
-                state, personalities, leg, president, chosen
-            )
+            # Hitler-Chancellor-at-F>=3 win is checked BEFORE the legislative
+            # session — Fascists win the moment Hitler takes the seat.
+            winner = check_winner(state, just_elected_chancellor=chosen)
+            if winner is not None:
+                state.winner = winner
+                state.winning_reason = (
+                    f"Hitler was elected Chancellor with "
+                    f"{state.fascist_policies_enacted} Fascist policies on the board."
+                )
+            else:
+                leg = legislative_session(
+                    state, deck, president, chosen, discard, enact
+                )
+                update_predicted_roles_after_session(
+                    state, personalities, leg, president, chosen
+                )
+                # Tally win check after the policy is enacted.
+                winner = check_winner(state)
+                if winner is Faction.LIBERAL:
+                    state.winner = winner
+                    state.winning_reason = "Liberals enacted 5 Liberal policies."
+                elif winner is Faction.FASCIST:
+                    state.winner = winner
+                    state.winning_reason = "Fascists enacted 6 Fascist policies."
             state.last_elected_president_id = president.id
             state.last_elected_chancellor_id = chosen.id
 
@@ -341,9 +363,26 @@ def start_game(
                 )
             )
 
+        if state.winner is not None:
+            print(_render_winner_banner(state))
+            break
+
         advance_presidency(state)
 
     return state
+
+
+def _render_winner_banner(state: GameState) -> str:
+    label = "LIBERAL" if state.winner is Faction.LIBERAL else "FASCIST"
+    return "\n".join(
+        [
+            "",
+            _DIVIDER,
+            f"GAME OVER — {label} VICTORY",
+            state.winning_reason or "",
+            _DIVIDER,
+        ]
+    )
 
 
 def main() -> None:

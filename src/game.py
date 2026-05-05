@@ -21,6 +21,11 @@ class Role(Enum):
     HITLER = "hitler"
 
 
+class Faction(Enum):
+    LIBERAL = "liberal"
+    FASCIST = "fascist"
+
+
 @dataclass
 class Player:
     id: int
@@ -54,6 +59,8 @@ class GameState:
     liberal_policies_enacted: int = 0
     fascist_policies_enacted: int = 0
     history: list[RoundEvent] = field(default_factory=list)
+    winner: Optional["Faction"] = None
+    winning_reason: Optional[str] = None
 
 
 ChooseFn = Callable[[Player, list[Player]], Player]
@@ -161,6 +168,34 @@ def nominate_chancellor(state: GameState, choose_fn: ChooseFn) -> Player:
             f"(eligible: {[p.id for p in candidates]})"
         )
     return chosen
+
+
+_LIBERAL_POLICY_WIN_THRESHOLD = 5
+_FASCIST_POLICY_WIN_THRESHOLD = 6
+_HITLER_CHANCELLOR_FASCIST_THRESHOLD = 3
+
+
+def check_winner(
+    state: GameState,
+    just_elected_chancellor: Optional[Player] = None,
+) -> Optional[Faction]:
+    """Return the winning faction, or None if no win condition is met.
+
+    Pure function — caller is responsible for assigning state.winner. Tally
+    checks always run; the Hitler-Chancellor check only fires when a chancellor
+    is supplied (i.e., right after a successful election).
+    """
+    if state.liberal_policies_enacted >= _LIBERAL_POLICY_WIN_THRESHOLD:
+        return Faction.LIBERAL
+    if state.fascist_policies_enacted >= _FASCIST_POLICY_WIN_THRESHOLD:
+        return Faction.FASCIST
+    if (
+        just_elected_chancellor is not None
+        and just_elected_chancellor.role is Role.HITLER
+        and state.fascist_policies_enacted >= _HITLER_CHANCELLOR_FASCIST_THRESHOLD
+    ):
+        return Faction.FASCIST
+    return None
 
 
 def vote_chancellor(
