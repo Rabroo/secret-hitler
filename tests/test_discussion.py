@@ -96,6 +96,26 @@ def test_statement_prompt_chancellor_sees_chancellor_hand():
     assert "received" in text.lower() or "passed" in text.lower()
 
 
+def test_statement_prompt_bystander_explicitly_forbidden_from_card_claims():
+    """A non-government player must be told not to invent a President/
+    Chancellor role or any card draw."""
+    text = statement_prompt(
+        enacted=Policy.LIBERAL,
+        drawn_hand=None,
+        chancellor_hand=None,
+        liberal_tally=1,
+        fascist_tally=0,
+        president_id=1,
+        chancellor_id=2,
+    )
+    lower = text.lower()
+    assert "not in the government" in lower
+    assert "no policy cards" in lower or "saw no" in lower
+    # Forbid the specific failure mode from the buggy log.
+    assert "do not claim" in lower or "do not" in lower
+    assert "president" in lower and "chancellor" in lower
+
+
 # --- LLMAgent.make_statement ---
 
 

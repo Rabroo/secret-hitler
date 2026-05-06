@@ -32,6 +32,7 @@ Rules summary:
 - Fascists win by enacting 6 Fascist policies, or by electing Hitler as Chancellor after 3 Fascist policies are enacted.
 - 5-player term limit: only the previous *Chancellor* is term-limited; the previous President is still eligible to be Chancellor next round.
 - When citing past rounds, only cite events as they appear in the GAME HISTORY block above. Do not invent, infer, or paraphrase past events.
+- Do NOT claim to have been President, Chancellor, or to have drawn cards in any round unless the GAME HISTORY or your PRIVATE KNOWLEDGE says so. Inventing a role you didn't hold is the easiest lie to refute.
 - Be strategic and stay in character. Never reveal your role unless doing so helps you win.{role_hint}
 
 You must reply with valid JSON only."""
@@ -256,23 +257,56 @@ def statement_prompt(
         f"  Enacted:     {enacted.value.upper()}",
         f"  Tally now:   L={liberal_tally} F={fascist_tally}",
     ]
+
     if drawn_hand is not None:
+        # PRESIDENT — saw 3 cards privately.
         hand_str = ", ".join(p.value.upper() for p in drawn_hand)
         lines.append(
-            f"\nYou drew (privately, only you saw this): [{hand_str}]."
+            f"\nYou were the PRESIDENT this round. You privately drew "
+            f"[{hand_str}], discarded one card, and passed the other 2 to "
+            f"the Chancellor. Nobody else saw your draw."
         )
-    if chancellor_hand is not None:
+        lines.append(
+            "Make ONE public statement (1-2 sentences). You may claim "
+            "your draw honestly or lie about it. Common President lines: "
+            'claim what you drew, defend the discard, accuse the Chancellor.'
+        )
+    elif chancellor_hand is not None:
+        # CHANCELLOR — saw 2 cards privately.
         hand_str = ", ".join(p.value.upper() for p in chancellor_hand)
         lines.append(
-            f"\nYou received from the President: [{hand_str}]. "
-            f"You then enacted {enacted.value.upper()}."
+            f"\nYou were the CHANCELLOR this round. You received "
+            f"[{hand_str}] from the President and enacted "
+            f"{enacted.value.upper()}. Nobody else saw your hand."
         )
+        lines.append(
+            "Make ONE public statement (1-2 sentences). You may claim "
+            "honestly what you were given or lie about it. Common Chancellor "
+            "lines: claim what was passed, blame the President's draw, "
+            "explain why you enacted what you did."
+        )
+    else:
+        # BYSTANDER — was not in the government, saw nothing private.
+        lines.append(
+            "\nYou were NOT in the government this round (you are not "
+            f"President P{president_id} and not Chancellor P{chancellor_id}). "
+            "You saw NO policy cards this round."
+        )
+        lines.append(
+            "Do NOT claim to have drawn cards, been President, or been "
+            "Chancellor — those would be obvious lies that the actual "
+            "President / Chancellor and everyone watching would refute "
+            "instantly. Stick to public information."
+        )
+        lines.append(
+            "Make ONE public statement (1-2 sentences) reacting to what "
+            "the gov did: accuse, defend, ask the gov to explain themselves, "
+            "share suspicions, or compare claims. No card claims about "
+            "yourself."
+        )
+
     lines.append(
-        "\nMake ONE public statement to the table (1-2 sentences). You may "
-        "lie, hedge, accuse, or claim cards — whatever serves your team."
-    )
-    lines.append(
-        'Reply as JSON: {"reasoning": "<one short sentence>", '
+        '\nReply as JSON: {"reasoning": "<one short sentence>", '
         '"statement": "<your public message>"}'
     )
     return "\n".join(lines)
