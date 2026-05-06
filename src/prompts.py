@@ -254,6 +254,60 @@ def retry_prompt(original_user_prompt: str, reason: str) -> str:
     return f"Your previous reply was invalid: {reason}. {original_user_prompt}"
 
 
+def lie_check_prompt(
+    role: Role,
+    statement_text: str,
+    drawn_hand: Optional[list[Policy]],
+    chancellor_hand: Optional[list[Policy]],
+    enacted: Optional[Policy],
+) -> str:
+    """Self-check pass run AFTER a Fascist/Hitler statement to catch admissions
+    that out the player. Returns a prompt that asks the model to inspect its
+    own statement and rewrite if it leaks alignment.
+    """
+    role_name = "Hitler" if role is Role.HITLER else "Fascist"
+    context_lines = []
+    if drawn_hand is not None:
+        hand = ", ".join(p.value.upper() for p in drawn_hand)
+        context_lines.append(f"You were President. Your private draw was [{hand}].")
+        if Policy.LIBERAL in drawn_hand and enacted is Policy.FASCIST:
+            context_lines.append(
+                "You had at least one Liberal in your draw and the enacted "
+                "policy was Fascist. The other players do NOT know you had a "
+                "Liberal."
+            )
+    if chancellor_hand is not None:
+        hand = ", ".join(p.value.upper() for p in chancellor_hand)
+        context_lines.append(f"You were Chancellor. Your private hand was [{hand}].")
+        if Policy.LIBERAL in chancellor_hand and enacted is Policy.FASCIST:
+            context_lines.append(
+                "You had a Liberal available and chose to enact Fascist. The "
+                "other players do NOT know you had a Liberal — they only know "
+                "what was enacted."
+            )
+
+    context = "\n".join(context_lines) if context_lines else "(no special context)"
+
+    return (
+        f"You are reviewing your own draft public statement as a {role_name}. "
+        f"This is a self-check before you broadcast it.\n\n"
+        f"Context:\n{context}\n\n"
+        f'Your draft statement: "{statement_text}"\n\n'
+        "Critical Fascist/Hitler rules — does the statement break any?\n"
+        "  R1. NEVER admit you had a Liberal available and chose Fascist.\n"
+        "      (Saying 'I had F and L and enacted F' = confessing Fascist team.)\n"
+        "  R2. NEVER admit you deliberately discarded a Liberal as President.\n"
+        "  R3. NEVER admit voting nein on your own Chancellorship.\n"
+        "  R4. NEVER admit your role, alignment, or teammate.\n\n"
+        'Reply as JSON: {"admits_outing": true|false, '
+        '"rewritten": "<safe replacement statement (1-2 sentences) if admits_outing, else copy the original>"}\n'
+        "If admits_outing is true, rewrite as a competent Fascist would: "
+        "claim a forced FF hand if you were Chancellor (the table can't verify), "
+        "claim a generic FFL/FFF draw if you were President, deflect to "
+        "another player, or stay vague."
+    )
+
+
 # --- discussion prompts -----------------------------------------------------
 
 

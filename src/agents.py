@@ -22,6 +22,7 @@ from src.game import (
     DiscardFn,
     EnactFn,
     Player,
+    Role,
     RoundEvent,
     Statement,
     VoteFn,
@@ -31,6 +32,7 @@ from src.policies import Policy
 from src.prompts import (
     discard_prompt,
     enact_prompt,
+    lie_check_prompt,
     nominate_prompt,
     retry_prompt,
     statement_prompt,
@@ -343,6 +345,17 @@ class LLMAgent:
             parsed = self._parse_statement_reply(reply)
             if parsed is not None:
                 text, reasoning = parsed
+                # For Fascist/Hitler players, run a self-check pass that
+                # reviews the statement and rewrites it if it admits the
+                # role. The check uses the same client + system prompt.
+                if self.player.role in (Role.FASCIST, Role.HITLER):
+                    text = self._self_check_lie(
+                        text,
+                        system=system,
+                        drawn_hand=drawn_hand,
+                        chancellor_hand=chancellor_hand,
+                        enacted=enacted,
+                    )
                 self.last_statement_reasoning = reasoning
                 return Statement(
                     player_id=self.player.id, text=text, reasoning=reasoning
@@ -406,6 +419,42 @@ class LLMAgent:
         )
         self.last_update_reasoning = _FALLBACK_REASONING
         return dict(self.personality.predicted_roles)
+
+    def _self_check_lie(
+        self,
+        statement_text: str,
+        system: str,
+        drawn_hand: Optional[list[Policy]],
+        chancellor_hand: Optional[list[Policy]],
+        enacted: Policy,
+    ) -> str:
+        """Fascist/Hitler-only second-pass: have the LLM inspect its own
+        statement and rewrite it if it admits the role. Best-effort — if the
+        check call fails or returns garbage, fall back to the original."""
+        if getattr(self.client, "is_exhausted", False):
+            return statement_text
+        check_user = lie_check_prompt(
+            role=self.player.role,
+            statement_text=statement_text,
+            drawn_hand=drawn_hand,
+            chancellor_hand=chancellor_hand,
+            enacted=enacted,
+        )
+        try:
+            reply = self.client.chat(system, check_user, json_mode=True)
+        except RuntimeError:
+            return statement_text
+        try:
+            data = json.loads(reply or "")
+        except (json.JSONDecodeError, TypeError):
+            return statement_text
+        if not isinstance(data, dict):
+            return statement_text
+        admits = data.get("admits_outing")
+        rewritten = data.get("rewritten")
+        if admits is True and isinstance(rewritten, str) and rewritten.strip():
+            return rewritten.strip()
+        return statement_text
 
     # --- fallbacks (annotate reasoning so the dashboard explains the source) -
 

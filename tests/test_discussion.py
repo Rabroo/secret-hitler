@@ -34,16 +34,25 @@ class _FakeClient:
         return self.replies.popleft()
 
 
-def _build_llm_agent(replies, role_index=0):
-    """Build an LLMAgent. role_index 0..4 picks which seat is the agent."""
-    forced = [Role.LIBERAL, Role.LIBERAL, Role.FASCIST, Role.LIBERAL, Role.HITLER]
+def _build_llm_agent(replies, role_index=0, role=None):
+    """Build an LLMAgent. Pass `role_index` 0..4 for the seat OR `role`
+    (Role.LIBERAL/Role.FASCIST/Role.HITLER) to make Player 1 that role."""
+    if role is Role.FASCIST:
+        forced = [Role.FASCIST, Role.LIBERAL, Role.LIBERAL, Role.LIBERAL, Role.HITLER]
+    elif role is Role.HITLER:
+        forced = [Role.HITLER, Role.LIBERAL, Role.LIBERAL, Role.LIBERAL, Role.FASCIST]
+    elif role is Role.LIBERAL:
+        forced = [Role.LIBERAL, Role.LIBERAL, Role.FASCIST, Role.LIBERAL, Role.HITLER]
+    else:
+        forced = [Role.LIBERAL, Role.LIBERAL, Role.FASCIST, Role.LIBERAL, Role.HITLER]
+    seat = 0 if role is not None else role_index
     players = assign_roles(forced_roles=forced)
     pers = build_personalities(players)
-    fallback = RandomAgent(player=players[role_index], seed=999)
+    fallback = RandomAgent(player=players[seat], seed=999)
     client = _FakeClient(replies)
     agent = LLMAgent(
-        player=players[role_index],
-        personality=pers[players[role_index].id],
+        player=players[seat],
+        personality=pers[players[seat].id],
         all_players=players,
         client=client,
         fallback=fallback,
@@ -81,6 +90,92 @@ def test_statement_prompt_president_sees_drawn_hand():
         chancellor_id=3,
     )
     assert "drew" in text.lower()
+
+
+def test_lie_check_prompt_describes_outing_rules():
+    from src.prompts import lie_check_prompt
+
+    text = lie_check_prompt(
+        role=Role.HITLER,
+        statement_text="I had F and L and chose F.",
+        drawn_hand=None,
+        chancellor_hand=[Policy.FASCIST, Policy.LIBERAL],
+        enacted=Policy.FASCIST,
+    )
+    lower = text.lower()
+    # Must mention each "never admit" rule
+    assert "liberal available" in lower
+    assert "deliberately discarded" in lower
+    assert "vote nein on your own" in lower or "voting nein on your own" in lower
+    # Must require the JSON shape we parse
+    assert "admits_outing" in text
+    assert "rewritten" in text
+
+
+def test_llm_agent_fascist_statement_runs_self_check_when_admits():
+    """If the LLM's first reply admits a Fascist tell, the self-check rewrites it."""
+    bad_admission = json.dumps({
+        "reasoning": "honest",
+        "statement": "I had a Liberal and a Fascist and chose the Fascist.",
+    })
+    safe_rewrite = json.dumps({
+        "admits_outing": True,
+        "rewritten": "I was passed two Fascists, no choice.",
+    })
+    agent, client, _ = _build_llm_agent([bad_admission, safe_rewrite], role=Role.FASCIST)
+    stmt = agent.make_statement(
+        enacted=Policy.FASCIST,
+        drawn_hand=None,
+        chancellor_hand=[Policy.FASCIST, Policy.LIBERAL],
+        president_id=2,
+        chancellor_id=1,
+        liberal_tally=0,
+        fascist_tally=1,
+    )
+    # The rewritten statement is what gets broadcast.
+    assert "two Fascists" in stmt.text
+    assert len(client.calls) == 2  # initial + self-check
+
+
+def test_llm_agent_fascist_statement_keeps_safe_text_when_no_admission():
+    """If the LLM's statement doesn't admit anything, the self-check copies it through."""
+    safe_initial = json.dumps({
+        "reasoning": "covered",
+        "statement": "I was passed two Fascists, no choice.",
+    })
+    self_check_clean = json.dumps({
+        "admits_outing": False,
+        "rewritten": "I was passed two Fascists, no choice.",
+    })
+    agent, client, _ = _build_llm_agent([safe_initial, self_check_clean], role=Role.HITLER)
+    stmt = agent.make_statement(
+        enacted=Policy.FASCIST,
+        drawn_hand=None,
+        chancellor_hand=[Policy.FASCIST, Policy.FASCIST],
+        president_id=2,
+        chancellor_id=1,
+        liberal_tally=0,
+        fascist_tally=1,
+    )
+    assert "two Fascists" in stmt.text
+
+
+def test_llm_agent_liberal_statement_skips_self_check():
+    """Liberals don't run the self-check (they have no role to hide)."""
+    initial = json.dumps({"reasoning": "honest", "statement": "I drew LLF."})
+    agent, client, _ = _build_llm_agent([initial], role=Role.LIBERAL)
+    stmt = agent.make_statement(
+        enacted=Policy.LIBERAL,
+        drawn_hand=[Policy.LIBERAL, Policy.LIBERAL, Policy.FASCIST],
+        chancellor_hand=None,
+        president_id=1,
+        chancellor_id=3,
+        liberal_tally=1,
+        fascist_tally=0,
+    )
+    assert stmt.text == "I drew LLF."
+    # Only one call — no self-check pass for Liberals.
+    assert len(client.calls) == 1
 
 
 def test_statement_prompt_renders_prior_statements_block():
