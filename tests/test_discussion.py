@@ -83,6 +83,24 @@ def test_statement_prompt_president_sees_drawn_hand():
     assert "drew" in text.lower()
 
 
+def test_statement_prompt_renders_prior_statements_block():
+    text = statement_prompt(
+        enacted=Policy.LIBERAL,
+        drawn_hand=None,
+        chancellor_hand=None,
+        liberal_tally=1,
+        fascist_tally=0,
+        president_id=1,
+        chancellor_id=3,
+        prior_statements=[
+            Statement(player_id=1, text="I drew FLL.", reasoning=""),
+            Statement(player_id=3, text="I received LL.", reasoning=""),
+        ],
+    )
+    assert "I drew FLL" in text
+    assert "I received LL" in text
+
+
 def test_statement_prompt_chancellor_sees_chancellor_hand():
     text = statement_prompt(
         enacted=Policy.FASCIST,
@@ -219,19 +237,35 @@ def test_llm_agent_make_statement_skips_when_budget_exhausted():
     assert len(client.calls) == 0
 
 
-def test_llm_agent_make_statement_does_not_see_other_statements():
-    """Parallel collection — the prompt for one player must NOT contain other
-    players' statements from the same round."""
+def test_llm_agent_make_statement_includes_prior_statements_when_given():
+    """Chancellor and bystanders see prior_statements (Pres + maybe Chan)."""
+    agent, client, _ = _build_llm_agent(
+        [json.dumps({"reasoning": "ok", "statement": "Mine."})]
+    )
+    prior = [Statement(player_id=1, text="Clean draw, three liberals.", reasoning="")]
+    agent.make_statement(
+        enacted=Policy.LIBERAL,
+        drawn_hand=None,
+        chancellor_hand=None,
+        prior_statements=prior,
+    )
+    user = client.calls[0]["user"]
+    assert "Clean draw, three liberals" in user
+
+
+def test_llm_agent_make_statement_omits_prior_block_when_none():
+    """First speaker (President) sees no prior statements."""
     agent, client, _ = _build_llm_agent(
         [json.dumps({"reasoning": "ok", "statement": "Mine."})]
     )
     agent.make_statement(
-        enacted=Policy.LIBERAL, drawn_hand=None, chancellor_hand=None
+        enacted=Policy.LIBERAL,
+        drawn_hand=None,
+        chancellor_hand=None,
+        prior_statements=None,
     )
     user = client.calls[0]["user"]
-    # Sanity: the user prompt mentions decision context but no "Statements this round"
-    # block (that block belongs to the update prompt, not the statement prompt).
-    assert "Statements this round" not in user
+    assert "Statements made earlier this round" not in user
 
 
 # --- RandomAgent placeholder behaviour ---

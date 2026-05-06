@@ -359,24 +359,47 @@ def start_game(
                     f"{leg.discarded_by_chancellor.value.upper()})."
                 )
 
-                # Discussion phase — collected in PARALLEL (no agent sees
-                # another's statement before speaking).
+                # Discussion phase — three sub-phases for natural flow:
+                #   1. President speaks first (no prior statements).
+                #   2. Chancellor speaks second (sees President's statement).
+                #   3. Bystanders speak in parallel (each sees Pres + Chan,
+                #      not each other).
                 if discussion:
+                    # Phase 1: President.
+                    if president.alive:
+                        statements.append(
+                            agents[president.id].make_statement(
+                                enacted=leg.enacted,
+                                drawn_hand=leg.drawn,
+                                chancellor_hand=None,
+                                prior_statements=None,
+                            )
+                        )
+                    # Phase 2: Chancellor (if distinct from President — they
+                    # always are at 5p, but guard anyway).
+                    if chosen.alive and chosen.id != president.id:
+                        statements.append(
+                            agents[chosen.id].make_statement(
+                                enacted=leg.enacted,
+                                drawn_hand=None,
+                                chancellor_hand=leg.handed_to_chancellor,
+                                prior_statements=list(statements),
+                            )
+                        )
+                    # Phase 3: Bystanders, all see Pres + Chan but not each
+                    # other (snapshot taken before this loop).
+                    gov_snapshot = list(statements)
                     for p in players:
                         if not p.alive:
                             continue
-                        agent = agents[p.id]
-                        drawn = leg.drawn if p.id == president.id else None
-                        chan_hand = (
-                            leg.handed_to_chancellor
-                            if p.id == chosen.id
-                            else None
-                        )
+                        if p.id == president.id or p.id == chosen.id:
+                            continue
                         statements.append(
-                            agent.make_statement(
+                            agents[p.id].make_statement(
                                 enacted=leg.enacted,
-                                drawn_hand=drawn,
-                                chancellor_hand=chan_hand,
+                                drawn_hand=None,
+                                chancellor_hand=None,
+                                prior_statements=gov_snapshot,
                             )
                         )
 

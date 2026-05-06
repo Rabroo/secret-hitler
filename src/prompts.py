@@ -250,6 +250,7 @@ def statement_prompt(
     fascist_tally: int,
     president_id: int,
     chancellor_id: int,
+    prior_statements: Optional[list[Statement]] = None,
 ) -> str:
     lines = [
         "The legislative session is complete:",
@@ -257,6 +258,11 @@ def statement_prompt(
         f"  Enacted:     {enacted.value.upper()}",
         f"  Tally now:   L={liberal_tally} F={fascist_tally}",
     ]
+
+    if prior_statements:
+        lines.append("\nStatements made earlier this round:")
+        for s in prior_statements:
+            lines.append(f'  P{s.player_id}: "{s.text}"')
 
     if drawn_hand is not None:
         # PRESIDENT — saw 3 cards privately.

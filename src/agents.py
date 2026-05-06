@@ -65,6 +65,7 @@ class PlayerAgent(Protocol):
         enacted: Policy,
         drawn_hand: Optional[list[Policy]],
         chancellor_hand: Optional[list[Policy]],
+        prior_statements: Optional[list[Statement]] = None,
     ) -> Statement: ...
     def update_predicted_roles(
         self, statements_this_round: list[Statement]
@@ -111,6 +112,7 @@ class RandomAgent:
         enacted: Policy,
         drawn_hand: Optional[list[Policy]],
         chancellor_hand: Optional[list[Policy]],
+        prior_statements: Optional[list[Statement]] = None,
     ) -> Statement:
         self.last_statement_reasoning = _RANDOM_REASONING
         return Statement(
@@ -289,6 +291,7 @@ class LLMAgent:
         enacted: Policy,
         drawn_hand: Optional[list[Policy]],
         chancellor_hand: Optional[list[Policy]],
+        prior_statements: Optional[list[Statement]] = None,
     ) -> Statement:
         if getattr(self.client, "is_exhausted", False):
             self.last_statement_reasoning = _FALLBACK_REASONING
@@ -326,6 +329,7 @@ class LLMAgent:
             fascist_tally=f_tally,
             president_id=pres_id,
             chancellor_id=chan_id,
+            prior_statements=prior_statements,
         )
         user = base_user
 

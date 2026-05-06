@@ -24,9 +24,15 @@ nominate -> vote -> [if pass] legislative session
 
 If the election failed, no discussion. If `--no-discussion`, fall back to the old heuristic update.
 
-## Statement collection (parallel, not sequential)
+## Statement collection (3-phase: gov sequential, bystanders parallel)
 
-Every alive player makes one statement, **without seeing other players' statements first**. All statements are collected, then revealed simultaneously. Earlier in the spec we considered seat-order with prior statements visible; the operator preferred parallel — equal information access, fewer "first-speaker advantage" effects.
+Three phases per discussion round:
+
+1. **President speaks first.** No prior statements visible. They go on record explaining (or lying about) their draw and discard before anyone else has weighed in.
+2. **Chancellor speaks second.** Sees the President's statement in their prompt. They can corroborate, contradict, or add detail — knowing the President has already committed to a story.
+3. **Bystanders speak in parallel.** Each non-government living player makes their statement seeing Pres + Chan (snapshot before phase 3 starts) but **not** each other's. This avoids "first bystander advantage" where later speakers parrot earlier ones.
+
+This produces a more natural conversation flow: the gov has to defend itself first; bystanders react.
 
 ### Decision contract
 ```python
