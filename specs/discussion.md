@@ -1,99 +1,165 @@
-# Spec: Discussion Round
+# Spec: Discussion Round + LLM-Driven Predicted-Role Updates
 
 ## Goal
-After each successful legislative session, every alive player makes one public statement before the next round. President can claim what they drew; Chancellor can claim what they were given; others can comment, accuse, or deflect. Statements are public, visible to everyone (including future LLM prompts), and may be lies.
+After every enacted policy, run a discussion phase that does two things:
 
-The discussion is what makes Secret Hitler a game of social deduction — without it the LLM agents only see numeric tallies.
+1. **Statements** — every alive player makes one short public statement.
+2. **Belief updates** — every Liberal then privately revises their `predicted_roles` map for the other players, using all the public information (history + this round's statements). Fascist team viewers do not update; they already know the truth at 5p.
 
-## When it runs
-- Only after a **successful** election + legislative session (i.e., a policy was actually enacted that round).
-- Skipped after failed elections.
-- Skipped once `state.winner` is set (game over).
+The LLM-driven belief update **replaces** the heuristic in `update_predicted_roles_after_session`. The heuristic stays in the codebase for `--no-discussion` runs (a deterministic, free fallback) but is bypassed when the discussion phase is on.
 
-## Order
-Statements are collected in **seat order** (Player 1, then 2, then 3, ...). Each speaker sees the statements made *earlier in the same round* in their prompt — Player 3 hears P1 and P2 before speaking.
+## Phases within a round
 
-This isn't perfectly faithful to real-time table talk (which is freeform overlap) but it's a clean approximation and lets later speakers react to earlier ones.
+Old order:
+```
+nominate -> vote -> [if pass] legislative session -> heuristic role update -> append history
+```
 
-## Decision contract
+New order:
+```
+nominate -> vote -> [if pass] legislative session
+                              -> discussion (parallel statements, then LLM role updates)
+                              -> append history
+```
 
+If the election failed, no discussion. If `--no-discussion`, fall back to the old heuristic update.
+
+## Statement collection (parallel, not sequential)
+
+Every alive player makes one statement, **without seeing other players' statements first**. All statements are collected, then revealed simultaneously. Earlier in the spec we considered seat-order with prior statements visible; the operator preferred parallel — equal information access, fewer "first-speaker advantage" effects.
+
+### Decision contract
 ```python
 def make_statement(
     self,
     enacted: Policy,
-    drawn_hand: Optional[list[Policy]],     # the 3 cards (President only)
-    chancellor_hand: Optional[list[Policy]], # the 2 cards (Chancellor only)
-    prior_statements_this_round: list[Statement],
+    drawn_hand: Optional[list[Policy]],     # 3 cards (President only)
+    chancellor_hand: Optional[list[Policy]], # 2 cards (Chancellor only)
 ) -> Statement: ...
 ```
 
-- `drawn_hand` is `None` for everyone except the President.
-- `chancellor_hand` is `None` for everyone except the Chancellor.
-- `prior_statements_this_round` accumulates as we walk the seats.
+Returns a `Statement(player_id, text, reasoning)`. `text` is what's broadcast publicly; `reasoning` is the model's private rationale shown only in the operator dashboard.
 
-Returns a `Statement(player_id, text, reasoning)`. The `text` is what's broadcast publicly; `reasoning` is the model's private rationale (operator-only, shown in the dashboard).
+### Statement prompt
+User message:
+```
+The legislative session is complete:
+  Government:  President P{pres_id} + Chancellor P{chan_id}
+  Enacted:     {LIBERAL|FASCIST}
+  Tally now:   L=N F=N
 
-## Data shape
+[If President:] You drew (privately): [LIBERAL, FASCIST, LIBERAL]. You discarded [FASCIST].
+[If Chancellor:] You received: [LIBERAL, FASCIST]. You enacted [LIBERAL].
+
+Make ONE public statement to the table (1-2 sentences). You may lie.
+Reply as JSON: {"reasoning": "<short>", "statement": "<your public message>"}
+```
+
+## LLM-driven predicted-role update (Liberals only)
+
+After all statements are revealed, each **Liberal** is asked to revise their predicted_roles. Fascists/Hitler skip — their values are pinned at known truth at 5p.
+
+### Decision contract
+```python
+def update_predicted_roles(
+    self,
+    statements_this_round: list[Statement],
+) -> dict[int, float]: ...
+```
+
+Returns the *new* full `predicted_roles` map for every other living player, each in `[-1, +1]`. The agent stores this on `self.personality.predicted_roles` (for LLMAgent) and the runner reads it when rendering the dashboard.
+
+### Update prompt
+User message:
+```
+You just observed Round {n} unfold. Use everything in GAME HISTORY (above)
+plus the statements made this round to revise your predicted_roles for every
+other player.
+
+Current predicted_roles:
+  P2: +0.20
+  P3: -0.10
+  P4: +0.40
+  P5: +0.00
+
+Statements this round:
+  P1: "I drew clean — three liberals."
+  P2: "P1's claim is consistent."
+  P3: "Fishy. The deck is heavy fascist."
+  P4: "Trust no one yet."
+  P5: "P3 is paranoid."
+
+Reply as JSON:
+{
+  "reasoning": "<one short sentence>",
+  "predicted_roles": {"2": +0.30, "3": -0.40, "4": +0.30, "5": -0.10}
+}
+Each value in [-1, +1]. +1 = predicted Liberal, -1 = predicted Fascist team.
+```
+
+Parsing rules:
+- Keys must be alive player IDs other than self. Unknown keys ignored.
+- Values clamped to `[-1, +1]`.
+- Missing keys → preserve previous value (treated as "no change").
+- Two-attempt retry on bad JSON, then fall back to previous values.
+
+## CLI flag
+
+`--no-discussion` (default off — discussion is on by default at 5p).
+
+When set:
+- Skip statement collection entirely.
+- Use the heuristic `update_predicted_roles_after_session` instead.
+
+## Data shape (already added to game.py)
 
 ```python
 @dataclass
 class Statement:
     player_id: int
-    text: str          # public
-    reasoning: str     # operator-only
+    text: str
+    reasoning: str = ""
 
 # RoundEvent gains:
 statements: list[Statement] = field(default_factory=list)
 ```
 
-## LLM prompt
-A new `statement_prompt(...)` in `src/prompts.py`. The prompt structure:
+## History rendering
 
-System message: same as other decisions (role, predicted_roles, GAME HISTORY, role hint). Importantly, `GAME HISTORY` already contains *past rounds'* statements when the prompt is built for a later round.
-
-User message:
-```
-The legislative session is complete:
-  - Government: President P{pres_id} + Chancellor P{chan_id}
-  - Enacted: {LIBERAL|FASCIST}
-  - Tally now: L=N F=N
-
-[If President:] You drew (privately): [LIBERAL, FASCIST, LIBERAL]. You discarded [FASCIST].
-[If Chancellor:] You received from the President: [LIBERAL, FASCIST]. You enacted [LIBERAL].
-
-Statements made earlier this round:
-- P1: "I drew clean — three Liberals."
-- P2: "P1's claim is consistent with the enaction."
-
-Make ONE public statement to the table. You may lie or tell the truth.
-Reply as JSON: {"reasoning": "<one short sentence>", "statement": "<your public message>"}
-```
-
-If no prior statements: omit that block.
-
-## History integration
-`format_history()` is extended so each round's history line shows statements beneath the gov/enaction line:
+`format_history()` appends a `Statements:` block beneath the round line:
 ```
 - Round 3: Pres P3 + Chan P4 ELECTED 4-1. Enacted FASCIST. Tally L=2 F=1.
     Statements:
-      P1: "I drew FFF — they had no Liberal to give me."
-      P2: "Fishy. P1 had a chance to discard a Fascist last round and didn't."
-      ...
+      P1: "I had no Liberal in my draw — that was forced."
+      P2: "Plausible. Pass."
+      P3: "P4 didn't fight hard enough."
+      P4: "What was I supposed to do with FF?"
+      P5: "P1 has been in two F-enacting governments now."
 ```
 
-## Cost note
-Each enacted round adds **N alive LLM calls** (5 at start of game). At ~700 tokens per call (system + user + reasoning + statement), a 10-round game with 6 enactions adds ~30 calls / ~20k tokens. Roughly $0.05–0.10 on `gpt-5-mini`.
+## Dashboard
 
-The runner's existing `--token-budget` flag still gates this — once the budget is exhausted, statement-making falls back to a `(silent)` placeholder for that player and the rest of the game.
+A new section between `POLICY DECK` and `PLAYERS`:
+```
+DISCUSSION
+  P1 (LIBERAL):  "..."
+  P2 (FASCIST):  "..."
+  P3 (HITLER):   "..."
+  P4 (LIBERAL):  "..."
+  P5 (LIBERAL):  "..."
+```
 
-## CLI
-A new flag `--no-discussion` to skip the phase if the operator just wants the mechanical game (cheap; useful for runs that compare deck/voting outcomes without speech). Default: discussion **on**.
+Per-player blocks in the `PLAYERS` section also gain a `Statement reasoning:` line so the operator can see the *private* rationale behind each public message.
+
+## Cost
+
+Per enacted round, +8 LLM calls at 5 players (5 statements + 3 Liberal updates). At ~700 tokens per call, ~6k extra tokens per round. A 12-round game with 8 enactions → ~50k extra tokens → ~$0.10–0.20 on `gpt-5-mini`. The `--token-budget` flag still hard-gates this — once exhausted, statement and update calls fall back to placeholders / previous values.
 
 ## Out of scope
-- LLM-driven numerical updates to `predicted_roles` after each statement (V2; expensive).
-- Multi-turn back-and-forth in a single round.
-- Targeted accusations as a separate game-state field (statements are free text only).
-- Persisting statements across `start_game` invocations.
+- Multiple turns of back-and-forth in a single round.
+- LLM updates on failed-election rounds (we still skip discussion entirely there).
+- Targeted accusations as a separate game-state field.
+- Persisting statements / belief updates across game restarts.
 
 ## Dependencies
-Stdlib only. No new packages.
+Stdlib only.

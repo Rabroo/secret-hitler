@@ -29,10 +29,13 @@ Always clamped to `[-1.0, +1.0]` after the update.
 
 The asymmetry (`+0.2` vs `-0.3`) reflects the fact that an enacted Fascist policy is a stronger signal in real Secret Hitler — Liberals fall back hard when a Fascist policy goes through, but mildly trust a Liberal-enacting government because the deck composition (11 F vs 6 L) makes Liberal enactions sometimes lucky.
 
-## Why heuristic, not LLM-driven (yet)
-- An LLM-driven update would be 5 extra API calls per round (one per alive player), each generating a revised opinion. That's expensive — we'd want it gated behind a flag.
-- Strategically richer: an LLM could weigh *who voted for the gov*, *what the deck composition implies*, *what was claimed in speech*, etc.
-- We'll wire this in once the heuristic version stops being useful — likely as `--update-mode {heuristic,llm}`.
+## Heuristic vs LLM-driven (current state)
+The heuristic in this spec is **superseded by the LLM-driven update** described in `specs/discussion.md` whenever the discussion phase runs (the default).
+
+- With discussion on (default): each Liberal sees the round's statements and decides a fresh `predicted_roles` map themselves; the heuristic is bypassed.
+- With `--no-discussion`: this heuristic still runs as the cheap, deterministic fallback (no API calls, no statements).
+
+The heuristic stays in the codebase for that fallback path and for free random-mode runs.
 
 ## Edge cases
 - Election failed → no legislative session → no update.
