@@ -179,8 +179,7 @@ def test_update_predicted_roles_prompt_requires_every_other_player():
         statements=[],
     )
     lower = text.lower()
-    assert "must provide a value for every" in lower
-    # Player ids 2,3,4,5 should be referenced by the explicit list.
+    assert "every other living player" in lower
     for pid in (2, 3, 4, 5):
         assert str(pid) in text
 
@@ -196,9 +195,9 @@ def test_update_predicted_roles_prompt_includes_guidelines():
         statements=[],
     )
     lower = text.lower()
-    assert "liberal policy enaction" in lower
-    assert "fascist policy enaction" in lower
-    assert "scores never move" in lower or "be willing to commit" in lower
+    assert "liberal enaction" in lower
+    assert "fascist enaction" in lower
+    assert "flat scores" in lower or "commit" in lower
 
 
 # --- LLMAgent.make_statement ---

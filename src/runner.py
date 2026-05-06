@@ -290,6 +290,7 @@ def start_game(
     start_tally: tuple[int, int] | None = None,
     stack_deck: list[Policy] | None = None,
     discussion: bool = True,
+    llm_role_updates: bool = True,
 ) -> GameState:
     players = assign_roles(seed=seed, forced_roles=forced_roles)
     print(_render_operator_view(players))
@@ -404,8 +405,12 @@ def start_game(
                         )
 
                 # Predicted-role updates: LLM-driven if discussion is on AND
-                # we have LLM agents; otherwise fall back to the heuristic.
-                use_llm_update = (agents_mode == "llm") and discussion
+                # we have LLM agents AND the operator hasn't disabled them.
+                # Otherwise fall back to the cheap heuristic. Disabling this
+                # saves 3 LLM calls per enacted round.
+                use_llm_update = (
+                    (agents_mode == "llm") and discussion and llm_role_updates
+                )
                 if use_llm_update:
                     for p in players:
                         if not p.alive or p.role is not Role.LIBERAL:
@@ -533,6 +538,12 @@ def main() -> None:
         action="store_true",
         help="Skip the discussion phase; fall back to the heuristic predicted_roles update",
     )
+    start.add_argument(
+        "--no-llm-updates",
+        action="store_true",
+        help="Skip LLM-driven predicted_roles revision (use heuristic). "
+        "Saves ~3 LLM calls per enacted round; statements still happen.",
+    )
 
     args = parser.parse_args()
     if args.command == "start":
@@ -553,6 +564,7 @@ def main() -> None:
                 _parse_stack_deck(args.stack_deck) if args.stack_deck else None
             ),
             discussion=not args.no_discussion,
+            llm_role_updates=not args.no_llm_updates,
         )
 
 

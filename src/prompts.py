@@ -39,45 +39,26 @@ You must reply with valid JSON only."""
 
 
 _LIBERAL_HINT = (
-    "\n- As a Liberal, you start with no information. Use voting and policy "
-    "enactions in the GAME HISTORY above to update your predictions. Distrust "
-    "governments that produce Fascist policies. With the deck at 11 Fascist "
-    "vs 6 Liberal, a Liberal enaction is a meaningful trust signal."
+    "\n- Liberal: distrust governments that enact Fascist policies. Deck is "
+    "11F/6L so a Liberal enaction is a meaningful trust signal."
 )
 
 _FASCIST_HINT = (
-    "\n- As a Fascist, your job is to ENACT FASCIST POLICIES and protect Hitler. "
-    "Cover matters but it is NOT the goal — the goal is winning. Concretely:\n"
-    "  * As President with a hand of 3, prefer to discard a LIBERAL so the "
-    "Chancellor's hand contains a Fascist they can enact (or a forced double-"
-    "Fascist hand). Discarding a Fascist actively helps the enemy team and "
-    "should only happen when you genuinely need cover.\n"
-    "  * As Chancellor with a Fascist+Liberal hand, enact the FASCIST when you "
-    "can plausibly blame the President's draw.\n"
-    "  * Vote ja on governments that contain Hitler once F>=3 is on the board. "
-    "Hitler being elected then wins the game for your team.\n"
-    "  * IF YOU ARE NOMINATED as Chancellor, vote ja. Vetoing your own seat is "
-    "a tell.\n"
-    "  * Your `reasoning` field is PRIVATE — only the operator sees it. Be "
-    "candid about team strategy in reasoning; hide alignment in votes/statements."
+    "\n- Fascist: goal is ENACT Fascist policies + get Hitler elected at F>=3.\n"
+    "  * As President: prefer to discard a Liberal so Chancellor can enact F.\n"
+    "  * As Chancellor with F+L: enact F, blame President's draw.\n"
+    "  * Vote ja on governments containing Hitler once F>=3.\n"
+    "  * If nominated as Chancellor: vote ja — vetoing yourself is a tell.\n"
+    "  * `reasoning` is PRIVATE; be candid there, hide in votes/statements."
 )
 
 _HITLER_HINT = (
-    "\n- As Hitler, you are on the FASCIST team and you win when the Fascist "
-    "team wins. Cover is your priority, but cover is not pacifism — you also "
-    "need to actively enable Fascist enactions:\n"
-    "  * As President with 3 cards, prefer to discard a Liberal so the "
-    "Chancellor's hand allows a Fascist enaction. Pretend to a 'forced' line.\n"
-    "  * Once F>=3, getting elected Chancellor wins the game for your team.\n"
-    "  * IF YOU ARE NOMINATED as Chancellor, vote ja. Voting nein on your own "
-    "chancellorship is a huge tell that screams 'I'm Hitler.' Even if it's "
-    "early and you don't want the seat, vote ja — let it succeed or fail on "
-    "the others' votes.\n"
-    "  * Vote ja on your Fascist teammate's governments, especially when the "
-    "tally pressures Liberals (e.g., Liberals at 4 — block their last policy).\n"
-    "  * Your `reasoning` field is PRIVATE — only the operator sees it, never "
-    "the other players. Be candid in your reasoning about your team strategy. "
-    "Hide alignment in your votes and statements, not in your private reasoning."
+    "\n- Hitler: you're on the Fascist team and win when they win.\n"
+    "  * As President: prefer to discard a Liberal so the Chancellor can enact F.\n"
+    "  * Once F>=3, being elected Chancellor wins the game.\n"
+    "  * If nominated as Chancellor: ALWAYS vote ja. Voting nein on your own seat screams 'I'm Hitler'.\n"
+    "  * Vote ja on your teammate's governments when it pressures Liberals.\n"
+    "  * `reasoning` is PRIVATE; be candid there, hide in votes/statements."
 )
 
 _ROLE_HINTS = {
@@ -344,31 +325,17 @@ def update_predicted_roles_prompt(
     other_ids = sorted(current_predicted_roles.keys())
     id_list = ", ".join(str(pid) for pid in other_ids)
     return (
-        "You just observed this round's events and statements. Use everything "
-        "in GAME HISTORY (above), your own PRIVATE KNOWLEDGE (above), and the "
-        "statements below to revise your predicted_roles for every other "
-        "player.\n\n"
-        f"Your current predicted_roles:\n{current_lines}\n\n"
+        "Revise your predicted_roles using GAME HISTORY, your PRIVATE "
+        "KNOWLEDGE, and the statements below.\n\n"
+        f"Current predicted_roles:\n{current_lines}\n\n"
         f"Statements this round:\n{statement_lines}\n\n"
-        "Guidelines:\n"
-        "- A Liberal policy enaction is mild Liberal evidence for both "
-        "President and Chancellor: typically nudge their score +0.1 to +0.4 "
-        "toward +1. Stronger if you (as President) personally know they had "
-        "a clean Liberal hand and chose Liberal.\n"
-        "- A Fascist policy enaction is strong Fascist evidence for both: "
-        "typically nudge their score -0.2 to -0.6 toward -1. Even stronger "
-        "if you (as President) personally know the Chancellor had a Liberal "
-        "available and chose Fascist anyway.\n"
-        "- Voting patterns matter: a player who voted ja on a F-enacting "
-        "government looks more suspicious than one who voted nein.\n"
-        "- A statement that contradicts the actual enaction (e.g., claims a "
-        "Liberal-leaning hand when a Fascist was enacted) is a tell.\n"
-        "- Be willing to commit. If your scores never move, you're learning "
-        "nothing from this round.\n\n"
-        f"You MUST provide a value for EVERY other living player ({id_list}).\n"
-        "Reply as JSON:\n"
-        '{"reasoning": "<one short sentence>", '
+        "Rules of thumb: Liberal enaction nudges gov +0.1..+0.4; Fascist "
+        "enaction nudges gov -0.2..-0.6. Stronger if your PRIVATE KNOWLEDGE "
+        "tells you they had a choice. Voting ja on a F-enacting government "
+        "is suspicious. Statements contradicting the enaction are tells. "
+        "Commit — flat scores mean you learned nothing.\n\n"
+        f"You MUST give a value for EVERY other living player ({id_list}).\n"
+        'Reply as JSON: {"reasoning": "<short>", '
         '"predicted_roles": {"<id>": <float>, ...}}\n'
-        "Each value in [-1.0, +1.0]. +1 = predicted Liberal, -1 = predicted "
-        "Fascist team. Do not include yourself."
+        "Each in [-1.0, +1.0]. +1 = Liberal, -1 = Fascist team. Skip yourself."
     )
