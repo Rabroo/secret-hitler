@@ -65,6 +65,10 @@ class PlayerAgent(Protocol):
         enacted: Policy,
         drawn_hand: Optional[list[Policy]],
         chancellor_hand: Optional[list[Policy]],
+        president_id: int,
+        chancellor_id: int,
+        liberal_tally: int,
+        fascist_tally: int,
         prior_statements: Optional[list[Statement]] = None,
     ) -> Statement: ...
     def update_predicted_roles(
@@ -112,6 +116,10 @@ class RandomAgent:
         enacted: Policy,
         drawn_hand: Optional[list[Policy]],
         chancellor_hand: Optional[list[Policy]],
+        president_id: int = 0,
+        chancellor_id: int = 0,
+        liberal_tally: int = 0,
+        fascist_tally: int = 0,
         prior_statements: Optional[list[Statement]] = None,
     ) -> Statement:
         self.last_statement_reasoning = _RANDOM_REASONING
@@ -291,6 +299,10 @@ class LLMAgent:
         enacted: Policy,
         drawn_hand: Optional[list[Policy]],
         chancellor_hand: Optional[list[Policy]],
+        president_id: int = 0,
+        chancellor_id: int = 0,
+        liberal_tally: int = 0,
+        fascist_tally: int = 0,
         prior_statements: Optional[list[Statement]] = None,
     ) -> Statement:
         if getattr(self.client, "is_exhausted", False):
@@ -298,21 +310,6 @@ class LLMAgent:
             return Statement(
                 player_id=self.player.id, text="(silent)", reasoning=_FALLBACK_REASONING
             )
-
-        # We need round context for the prompt — pulled from the most recent
-        # appended history entry by the runner (which is what we'll do for the
-        # update call too). For the statement call the runner passes the round
-        # context via the prompt directly using the data it already has.
-        # The agent itself doesn't know the president/chancellor ids unless
-        # we plumb them; keep this simple by deriving them from history[-1]
-        # if available, falling back to "?" sentinels otherwise.
-        if self.history:
-            last = self.history[-1]
-            pres_id, chan_id = last.president_id, last.chancellor_id
-            l_tally, f_tally = last.liberal_tally, last.fascist_tally
-        else:
-            pres_id = chan_id = self.player.id
-            l_tally = f_tally = 0
 
         system = system_prompt(
             self.player,
@@ -325,10 +322,10 @@ class LLMAgent:
             enacted=enacted,
             drawn_hand=drawn_hand,
             chancellor_hand=chancellor_hand,
-            liberal_tally=l_tally,
-            fascist_tally=f_tally,
-            president_id=pres_id,
-            chancellor_id=chan_id,
+            liberal_tally=liberal_tally,
+            fascist_tally=fascist_tally,
+            president_id=president_id,
+            chancellor_id=chancellor_id,
             prior_statements=prior_statements,
         )
         user = base_user

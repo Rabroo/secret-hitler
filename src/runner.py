@@ -366,6 +366,13 @@ def start_game(
                 #   3. Bystanders speak in parallel (each sees Pres + Chan,
                 #      not each other).
                 if discussion:
+                    # Pass the CURRENT round's gov + tally explicitly — the
+                    # agent must not derive these from self.history because
+                    # the current round's RoundEvent hasn't been appended yet.
+                    cur_pres_id = president.id
+                    cur_chan_id = chosen.id
+                    cur_l_tally = state.liberal_policies_enacted
+                    cur_f_tally = state.fascist_policies_enacted
                     # Phase 1: President.
                     if president.alive:
                         statements.append(
@@ -373,6 +380,10 @@ def start_game(
                                 enacted=leg.enacted,
                                 drawn_hand=leg.drawn,
                                 chancellor_hand=None,
+                                president_id=cur_pres_id,
+                                chancellor_id=cur_chan_id,
+                                liberal_tally=cur_l_tally,
+                                fascist_tally=cur_f_tally,
                                 prior_statements=None,
                             )
                         )
@@ -384,6 +395,10 @@ def start_game(
                                 enacted=leg.enacted,
                                 drawn_hand=None,
                                 chancellor_hand=leg.handed_to_chancellor,
+                                president_id=cur_pres_id,
+                                chancellor_id=cur_chan_id,
+                                liberal_tally=cur_l_tally,
+                                fascist_tally=cur_f_tally,
                                 prior_statements=list(statements),
                             )
                         )
@@ -400,6 +415,10 @@ def start_game(
                                 enacted=leg.enacted,
                                 drawn_hand=None,
                                 chancellor_hand=None,
+                                president_id=cur_pres_id,
+                                chancellor_id=cur_chan_id,
+                                liberal_tally=cur_l_tally,
+                                fascist_tally=cur_f_tally,
                                 prior_statements=gov_snapshot,
                             )
                         )

@@ -211,10 +211,59 @@ def test_llm_agent_make_statement_returns_text():
         enacted=Policy.LIBERAL,
         drawn_hand=[Policy.LIBERAL, Policy.LIBERAL, Policy.LIBERAL],
         chancellor_hand=None,
+        president_id=1,
+        chancellor_id=3,
+        liberal_tally=1,
+        fascist_tally=0,
     )
     assert isinstance(stmt, Statement)
     assert "Three liberals" in stmt.text
     assert stmt.player_id == 1
+
+
+def test_llm_agent_make_statement_uses_caller_provided_gov_not_history():
+    """REGRESSION: the agent used to derive pres/chan/tally from
+    self.history[-1], which was the PREVIOUS round (history is appended after
+    discussion). That made round 2's bystanders read 'President P1 +
+    Chancellor P3' even though round 2's actual gov was different.
+
+    The fix: caller passes the current round's gov + tally explicitly. This
+    test asserts the prompt sent to the LLM uses the values we passed in,
+    NOT anything derived from history.
+    """
+    agent, client, _ = _build_llm_agent(
+        [json.dumps({"reasoning": "ok", "statement": "..."})]
+    )
+    # Salt history with a round that has DIFFERENT pres/chan/tally to the
+    # current call.
+    agent.history.append(
+        RoundEvent(
+            round_num=1,
+            president_id=1,
+            chancellor_id=3,
+            election_passed=True,
+            votes={1: True, 2: True, 3: True, 4: True, 5: True},
+            enacted=Policy.LIBERAL,
+            liberal_tally=1,
+            fascist_tally=0,
+            statements=[],
+        )
+    )
+    agent.make_statement(
+        enacted=Policy.FASCIST,
+        drawn_hand=None,
+        chancellor_hand=None,
+        president_id=2,    # current round's pres (not history's)
+        chancellor_id=4,   # current round's chan (not history's)
+        liberal_tally=1,
+        fascist_tally=1,
+    )
+    user = client.calls[0]["user"]
+    assert "P2" in user and "P4" in user
+    # Must NOT see history's gov spuriously rendered as the current round.
+    assert "President P1" not in user
+    assert "Chancellor P3" not in user
+    assert "L=1 F=1" in user
 
 
 def test_llm_agent_make_statement_falls_back_after_two_failures():
