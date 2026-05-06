@@ -299,12 +299,21 @@ def statement_prompt(
             "instantly. Stick to public information."
         )
         lines.append(
-            "Make ONE public statement (1-2 sentences) reacting to what "
-            "the gov did: accuse, defend, ask the gov to explain themselves, "
-            "share suspicions, or compare claims. No card claims about "
-            "yourself."
+            "Make ONE public statement (1-2 sentences): accuse, defend, "
+            "share a theory, point out a tell, or compare a gov member's "
+            "claim to what was enacted. No card claims about yourself."
         )
 
+    lines.append(
+        "\nIMPORTANT: this is a ONE-SHOT statement made simultaneously with "
+        "everyone else. Nobody will respond, and the President/Chancellor "
+        "have already made their own statements at the same time. "
+        "DO NOT ask questions like 'please explain' or 'why did you do X' — "
+        "no one will answer. State a position, accusation, or claim. "
+        "DO NOT address yourself by player ID — you ARE the player making "
+        "this statement. Refer to others as 'P2', 'Player 4', etc., never "
+        "yourself."
+    )
     lines.append(
         '\nReply as JSON: {"reasoning": "<one short sentence>", '
         '"statement": "<your public message>"}'
@@ -326,16 +335,34 @@ def update_predicted_roles_prompt(
         )
     else:
         statement_lines = "  (no statements this round)"
+    other_ids = sorted(current_predicted_roles.keys())
+    id_list = ", ".join(str(pid) for pid in other_ids)
     return (
         "You just observed this round's events and statements. Use everything "
-        "in GAME HISTORY (above) plus the statements below to revise your "
-        "predicted_roles for every other player.\n\n"
+        "in GAME HISTORY (above), your own PRIVATE KNOWLEDGE (above), and the "
+        "statements below to revise your predicted_roles for every other "
+        "player.\n\n"
         f"Your current predicted_roles:\n{current_lines}\n\n"
         f"Statements this round:\n{statement_lines}\n\n"
+        "Guidelines:\n"
+        "- A Liberal policy enaction is mild Liberal evidence for both "
+        "President and Chancellor: typically nudge their score +0.1 to +0.4 "
+        "toward +1. Stronger if you (as President) personally know they had "
+        "a clean Liberal hand and chose Liberal.\n"
+        "- A Fascist policy enaction is strong Fascist evidence for both: "
+        "typically nudge their score -0.2 to -0.6 toward -1. Even stronger "
+        "if you (as President) personally know the Chancellor had a Liberal "
+        "available and chose Fascist anyway.\n"
+        "- Voting patterns matter: a player who voted ja on a F-enacting "
+        "government looks more suspicious than one who voted nein.\n"
+        "- A statement that contradicts the actual enaction (e.g., claims a "
+        "Liberal-leaning hand when a Fascist was enacted) is a tell.\n"
+        "- Be willing to commit. If your scores never move, you're learning "
+        "nothing from this round.\n\n"
+        f"You MUST provide a value for EVERY other living player ({id_list}).\n"
         "Reply as JSON:\n"
         '{"reasoning": "<one short sentence>", '
         '"predicted_roles": {"<id>": <float>, ...}}\n'
         "Each value in [-1.0, +1.0]. +1 = predicted Liberal, -1 = predicted "
-        "Fascist team. Omit any player you don't want to change. Do not "
-        "include yourself."
+        "Fascist team. Do not include yourself."
     )

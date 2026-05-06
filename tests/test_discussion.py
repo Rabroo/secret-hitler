@@ -116,6 +116,73 @@ def test_statement_prompt_bystander_explicitly_forbidden_from_card_claims():
     assert "president" in lower and "chancellor" in lower
 
 
+def test_statement_prompt_forbids_asking_questions():
+    """One-shot parallel discussion — asking 'please explain' is pointless."""
+    for kw in [
+        dict(drawn_hand=[Policy.LIBERAL] * 3, chancellor_hand=None),
+        dict(drawn_hand=None, chancellor_hand=[Policy.LIBERAL] * 2),
+        dict(drawn_hand=None, chancellor_hand=None),
+    ]:
+        text = statement_prompt(
+            enacted=Policy.LIBERAL,
+            liberal_tally=1,
+            fascist_tally=0,
+            president_id=1,
+            chancellor_id=2,
+            **kw,
+        )
+        lower = text.lower()
+        assert "one-shot" in lower or "simultaneously" in lower
+        assert "do not ask" in lower or "no one will answer" in lower
+
+
+def test_statement_prompt_forbids_self_addressing():
+    """Players addressed themselves by ID in a buggy run; explicitly forbid."""
+    text = statement_prompt(
+        enacted=Policy.LIBERAL,
+        drawn_hand=None,
+        chancellor_hand=None,
+        liberal_tally=1,
+        fascist_tally=0,
+        president_id=1,
+        chancellor_id=2,
+    )
+    assert "do not address yourself" in text.lower()
+
+
+def test_update_predicted_roles_prompt_requires_every_other_player():
+    pers = build_personalities(
+        assign_roles(
+            forced_roles=[Role.LIBERAL, Role.LIBERAL, Role.FASCIST, Role.LIBERAL, Role.HITLER]
+        )
+    )[1]
+    text = update_predicted_roles_prompt(
+        current_predicted_roles=pers.predicted_roles,
+        statements=[],
+    )
+    lower = text.lower()
+    assert "must provide a value for every" in lower
+    # Player ids 2,3,4,5 should be referenced by the explicit list.
+    for pid in (2, 3, 4, 5):
+        assert str(pid) in text
+
+
+def test_update_predicted_roles_prompt_includes_guidelines():
+    pers = build_personalities(
+        assign_roles(
+            forced_roles=[Role.LIBERAL, Role.LIBERAL, Role.FASCIST, Role.LIBERAL, Role.HITLER]
+        )
+    )[1]
+    text = update_predicted_roles_prompt(
+        current_predicted_roles=pers.predicted_roles,
+        statements=[],
+    )
+    lower = text.lower()
+    assert "liberal policy enaction" in lower
+    assert "fascist policy enaction" in lower
+    assert "scores never move" in lower or "be willing to commit" in lower
+
+
 # --- LLMAgent.make_statement ---
 
 
