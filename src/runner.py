@@ -29,6 +29,7 @@ from src.game import (
     Player,
     Role,
     RoundEvent,
+    Statement,
     advance_presidency,
     assign_roles,
     check_winner,
@@ -93,6 +94,7 @@ def _build_agents(
     model: str,
     token_budget: int,
     history: list,
+    personalities: dict[int, Personality],
 ) -> dict[int, PlayerAgent]:
     if mode == "random":
         # Each player gets its own seeded RNG stream derived from the master seed.
@@ -105,7 +107,6 @@ def _build_agents(
 
         load_dotenv_if_present()
         client = LLMClient(model=model, token_budget=token_budget)
-        personalities = build_personalities(players, seed=seed)
         return {
             p.id: LLMAgent(
                 player=p,
@@ -144,6 +145,7 @@ def _render_dashboard(
     result: ElectionResult,
     leg: LegislativeSessionResult | None,
     state: GameState,
+    statements: list[Statement],
 ) -> str:
     lines = [
         "",
@@ -171,6 +173,15 @@ def _render_dashboard(
         f"  Tally now:    L={state.liberal_policies_enacted}  "
         f"F={state.fascist_policies_enacted}"
     )
+
+    # --- DISCUSSION ---
+    if statements:
+        lines.append("\nDISCUSSION")
+        for s in statements:
+            speaker = next(p for p in players if p.id == s.player_id)
+            lines.append(
+                f'  P{s.player_id} ({speaker.role.value.upper()}): "{s.text}"'
+            )
 
     # --- POLICY DECK (operator-only) ---
     if leg is not None:
@@ -278,6 +289,7 @@ def start_game(
     forced_roles: list[Role] | None = None,
     start_tally: tuple[int, int] | None = None,
     stack_deck: list[Policy] | None = None,
+    discussion: bool = True,
 ) -> GameState:
     players = assign_roles(seed=seed, forced_roles=forced_roles)
     print(_render_operator_view(players))
@@ -286,12 +298,21 @@ def start_game(
     if start_tally is not None:
         state.liberal_policies_enacted, state.fascist_policies_enacted = start_tally
 
+    # Build personalities ONCE and share the dict between the runner (dashboard
+    # + heuristic update) and every LLMAgent (so when the LLM updates its
+    # predicted_roles via update_predicted_roles, the dashboard sees it).
+    personalities = build_personalities(players)
     # Agents share a reference to state.history so that whenever the runner
     # appends a RoundEvent, every LLM agent's next prompt sees it.
     agents = _build_agents(
-        agents_mode, players, seed, model, token_budget, history=state.history
+        agents_mode,
+        players,
+        seed,
+        model,
+        token_budget,
+        history=state.history,
+        personalities=personalities,
     )
-    personalities = build_personalities(players)
     choose = make_choose_fn(agents)
     vote = make_vote_fn(agents)
     discard = make_discard_fn(agents)
@@ -305,6 +326,7 @@ def start_game(
         result = vote_chancellor(state, chosen, vote)
 
         leg: LegislativeSessionResult | None = None
+        statements: list[Statement] = []
         if result.passed:
             # Hitler-Chancellor-at-F>=3 win is checked BEFORE the legislative
             # session — Fascists win the moment Hitler takes the seat.
@@ -319,9 +341,58 @@ def start_game(
                 leg = legislative_session(
                     state, deck, president, chosen, discard, enact
                 )
-                update_predicted_roles_after_session(
-                    state, personalities, leg, president, chosen
+                # Private knowledge: pres + chan each get a line about what
+                # they personally saw this round.
+                drawn_str = ", ".join(p.value.upper() for p in leg.drawn)
+                handed_str = ", ".join(
+                    p.value.upper() for p in leg.handed_to_chancellor
                 )
+                agents[president.id].private_log.append(
+                    f"Round {round_num}: as President I drew [{drawn_str}], "
+                    f"discarded {leg.discarded_by_president.value.upper()}, "
+                    f"passed [{handed_str}] to Chancellor P{chosen.id}."
+                )
+                agents[chosen.id].private_log.append(
+                    f"Round {round_num}: as Chancellor I received "
+                    f"[{handed_str}] from President P{president.id}, enacted "
+                    f"{leg.enacted.value.upper()} (discarded "
+                    f"{leg.discarded_by_chancellor.value.upper()})."
+                )
+
+                # Discussion phase — collected in PARALLEL (no agent sees
+                # another's statement before speaking).
+                if discussion:
+                    for p in players:
+                        if not p.alive:
+                            continue
+                        agent = agents[p.id]
+                        drawn = leg.drawn if p.id == president.id else None
+                        chan_hand = (
+                            leg.handed_to_chancellor
+                            if p.id == chosen.id
+                            else None
+                        )
+                        statements.append(
+                            agent.make_statement(
+                                enacted=leg.enacted,
+                                drawn_hand=drawn,
+                                chancellor_hand=chan_hand,
+                            )
+                        )
+
+                # Predicted-role updates: LLM-driven if discussion is on AND
+                # we have LLM agents; otherwise fall back to the heuristic.
+                use_llm_update = (agents_mode == "llm") and discussion
+                if use_llm_update:
+                    for p in players:
+                        if not p.alive or p.role is not Role.LIBERAL:
+                            continue
+                        agents[p.id].update_predicted_roles(statements)
+                else:
+                    update_predicted_roles_after_session(
+                        state, personalities, leg, president, chosen
+                    )
+
                 # Tally win check after the policy is enacted.
                 winner = check_winner(state)
                 if winner is Faction.LIBERAL:
@@ -343,6 +414,7 @@ def start_game(
                 enacted=leg.enacted if leg is not None else None,
                 liberal_tally=state.liberal_policies_enacted,
                 fascist_tally=state.fascist_policies_enacted,
+                statements=list(statements),
             )
         )
 
@@ -360,6 +432,7 @@ def start_game(
                     result=result,
                     leg=leg,
                     state=state,
+                    statements=statements,
                 )
             )
 
@@ -432,6 +505,11 @@ def main() -> None:
         default=None,
         help='Pre-arrange the 17-card draw pile, e.g. "F,F,L,L,F,..."',
     )
+    start.add_argument(
+        "--no-discussion",
+        action="store_true",
+        help="Skip the discussion phase; fall back to the heuristic predicted_roles update",
+    )
 
     args = parser.parse_args()
     if args.command == "start":
@@ -451,6 +529,7 @@ def main() -> None:
             stack_deck=(
                 _parse_stack_deck(args.stack_deck) if args.stack_deck else None
             ),
+            discussion=not args.no_discussion,
         )
 
 

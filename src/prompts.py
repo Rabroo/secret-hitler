@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from src.game import Player, Role, RoundEvent
+from src.game import Player, Role, RoundEvent, Statement
 from src.personality import Personality
 from src.policies import Policy
 
@@ -24,13 +24,14 @@ Your predicted_roles for the other players (+1 = you predict Liberal, -1 = you p
 {predicted_role_lines}
 
 Public roster: {roster}.
-
+{private_block}
 {history_block}
 
 Rules summary:
 - Liberals win by enacting 5 Liberal policies or executing Hitler.
 - Fascists win by enacting 6 Fascist policies, or by electing Hitler as Chancellor after 3 Fascist policies are enacted.
 - 5-player term limit: only the previous *Chancellor* is term-limited; the previous President is still eligible to be Chancellor next round.
+- When citing past rounds, only cite events as they appear in the GAME HISTORY block above. Do not invent, infer, or paraphrase past events.
 - Be strategic and stay in character. Never reveal your role unless doing so helps you win.{role_hint}
 
 You must reply with valid JSON only."""
@@ -52,9 +53,12 @@ _FASCIST_HINT = (
     "should only happen when you genuinely need cover.\n"
     "  * As Chancellor with a Fascist+Liberal hand, enact the FASCIST when you "
     "can plausibly blame the President's draw.\n"
-    "  * Vote ja on governments that contain Hitler once F>=3 is on the board.\n"
-    "  * Don't openly nominate Hitler in the first 2 rounds — Liberals notice. "
-    "After cover is built, push Hitler into the Chancellor seat at F>=3."
+    "  * Vote ja on governments that contain Hitler once F>=3 is on the board. "
+    "Hitler being elected then wins the game for your team.\n"
+    "  * IF YOU ARE NOMINATED as Chancellor, vote ja. Vetoing your own seat is "
+    "a tell.\n"
+    "  * Your `reasoning` field is PRIVATE — only the operator sees it. Be "
+    "candid about team strategy in reasoning; hide alignment in votes/statements."
 )
 
 _HITLER_HINT = (
@@ -63,13 +67,16 @@ _HITLER_HINT = (
     "need to actively enable Fascist enactions:\n"
     "  * As President with 3 cards, prefer to discard a Liberal so the "
     "Chancellor's hand allows a Fascist enaction. Pretend to a 'forced' line.\n"
-    "  * Don't volunteer for the Chancellor seat early. Once F>=3, getting "
-    "elected Chancellor wins the game for your team — that is the moment to "
-    "say yes.\n"
+    "  * Once F>=3, getting elected Chancellor wins the game for your team.\n"
+    "  * IF YOU ARE NOMINATED as Chancellor, vote ja. Voting nein on your own "
+    "chancellorship is a huge tell that screams 'I'm Hitler.' Even if it's "
+    "early and you don't want the seat, vote ja — let it succeed or fail on "
+    "the others' votes.\n"
     "  * Vote ja on your Fascist teammate's governments, especially when the "
     "tally pressures Liberals (e.g., Liberals at 4 — block their last policy).\n"
-    "  * 'Mimic Liberal play' means tone, not goals: you can vocally complain "
-    "about Fascist policies even after enacting them."
+    "  * Your `reasoning` field is PRIVATE — only the operator sees it, never "
+    "the other players. Be candid in your reasoning about your team strategy. "
+    "Hide alignment in your votes and statements, not in your private reasoning."
 )
 
 _ROLE_HINTS = {
@@ -132,10 +139,26 @@ def format_history(history: list[RoundEvent]) -> str:
             tail = "."
         tally = f" Tally L={ev.liberal_tally} F={ev.fascist_tally}."
         lines.append(f"- Round {ev.round_num}: {gov} {result}{breakdown}{tail}{tally}")
+        if ev.statements:
+            lines.append("    Statements:")
+            for s in ev.statements:
+                lines.append(f'      P{s.player_id}: "{s.text}"')
     last = history[-1]
     lines.append(
         f"Current tally: L={last.liberal_tally} F={last.fascist_tally}."
     )
+    return "\n".join(lines)
+
+
+def _private_block(private_log: Optional[list[str]]) -> str:
+    if not private_log:
+        return ""
+    lines = [
+        "",
+        "PRIVATE KNOWLEDGE (visible only to you, never to other players):",
+    ]
+    for entry in private_log:
+        lines.append(f"- {entry}")
     return "\n".join(lines)
 
 
@@ -144,6 +167,7 @@ def system_prompt(
     personality: Personality,
     all_players: list[Player],
     history: Optional[list[RoundEvent]] = None,
+    private_log: Optional[list[str]] = None,
 ) -> str:
     predicted_role_lines = "\n".join(
         f"  Player {pid}: {score:+.2f}"
@@ -157,6 +181,7 @@ def system_prompt(
         desire=personality.desire,
         predicted_role_lines=predicted_role_lines,
         roster=roster,
+        private_block=_private_block(private_log),
         history_block=format_history(history or []),
         role_hint=_ROLE_HINTS[player.role],
     )
@@ -211,3 +236,72 @@ def enact_prompt(hand: list[Policy]) -> str:
 
 def retry_prompt(original_user_prompt: str, reason: str) -> str:
     return f"Your previous reply was invalid: {reason}. {original_user_prompt}"
+
+
+# --- discussion prompts -----------------------------------------------------
+
+
+def statement_prompt(
+    enacted: Policy,
+    drawn_hand: Optional[list[Policy]],
+    chancellor_hand: Optional[list[Policy]],
+    liberal_tally: int,
+    fascist_tally: int,
+    president_id: int,
+    chancellor_id: int,
+) -> str:
+    lines = [
+        "The legislative session is complete:",
+        f"  Government:  President P{president_id} + Chancellor P{chancellor_id}",
+        f"  Enacted:     {enacted.value.upper()}",
+        f"  Tally now:   L={liberal_tally} F={fascist_tally}",
+    ]
+    if drawn_hand is not None:
+        hand_str = ", ".join(p.value.upper() for p in drawn_hand)
+        lines.append(
+            f"\nYou drew (privately, only you saw this): [{hand_str}]."
+        )
+    if chancellor_hand is not None:
+        hand_str = ", ".join(p.value.upper() for p in chancellor_hand)
+        lines.append(
+            f"\nYou received from the President: [{hand_str}]. "
+            f"You then enacted {enacted.value.upper()}."
+        )
+    lines.append(
+        "\nMake ONE public statement to the table (1-2 sentences). You may "
+        "lie, hedge, accuse, or claim cards — whatever serves your team."
+    )
+    lines.append(
+        'Reply as JSON: {"reasoning": "<one short sentence>", '
+        '"statement": "<your public message>"}'
+    )
+    return "\n".join(lines)
+
+
+def update_predicted_roles_prompt(
+    current_predicted_roles: dict[int, float],
+    statements: list[Statement],
+) -> str:
+    current_lines = "\n".join(
+        f"  P{pid}: {score:+.2f}"
+        for pid, score in sorted(current_predicted_roles.items())
+    )
+    if statements:
+        statement_lines = "\n".join(
+            f'  P{s.player_id}: "{s.text}"' for s in statements
+        )
+    else:
+        statement_lines = "  (no statements this round)"
+    return (
+        "You just observed this round's events and statements. Use everything "
+        "in GAME HISTORY (above) plus the statements below to revise your "
+        "predicted_roles for every other player.\n\n"
+        f"Your current predicted_roles:\n{current_lines}\n\n"
+        f"Statements this round:\n{statement_lines}\n\n"
+        "Reply as JSON:\n"
+        '{"reasoning": "<one short sentence>", '
+        '"predicted_roles": {"<id>": <float>, ...}}\n'
+        "Each value in [-1.0, +1.0]. +1 = predicted Liberal, -1 = predicted "
+        "Fascist team. Omit any player you don't want to change. Do not "
+        "include yourself."
+    )

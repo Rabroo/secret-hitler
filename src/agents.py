@@ -17,7 +17,15 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
-from src.game import ChooseFn, DiscardFn, EnactFn, Player, RoundEvent, VoteFn
+from src.game import (
+    ChooseFn,
+    DiscardFn,
+    EnactFn,
+    Player,
+    RoundEvent,
+    Statement,
+    VoteFn,
+)
 from src.personality import Personality
 from src.policies import Policy
 from src.prompts import (
@@ -25,7 +33,9 @@ from src.prompts import (
     enact_prompt,
     nominate_prompt,
     retry_prompt,
+    statement_prompt,
     system_prompt,
+    update_predicted_roles_prompt,
     vote_prompt,
 )
 
@@ -42,11 +52,23 @@ class PlayerAgent(Protocol):
     last_vote_reasoning: str
     last_discard_reasoning: str
     last_enact_reasoning: str
+    last_statement_reasoning: str
+    last_update_reasoning: str
+    private_log: list[str]
 
     def nominate(self, eligible: list[Player]) -> Player: ...
     def vote(self, president: Player, nominee: Player) -> bool: ...
     def discard_policy(self, hand: list[Policy]) -> Policy: ...
     def enact_policy(self, hand: list[Policy]) -> Policy: ...
+    def make_statement(
+        self,
+        enacted: Policy,
+        drawn_hand: Optional[list[Policy]],
+        chancellor_hand: Optional[list[Policy]],
+    ) -> Statement: ...
+    def update_predicted_roles(
+        self, statements_this_round: list[Statement]
+    ) -> dict[int, float]: ...
 
 
 @dataclass
@@ -57,6 +79,9 @@ class RandomAgent:
     last_vote_reasoning: str = ""
     last_discard_reasoning: str = ""
     last_enact_reasoning: str = ""
+    last_statement_reasoning: str = ""
+    last_update_reasoning: str = ""
+    private_log: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.seed)
@@ -81,6 +106,24 @@ class RandomAgent:
         self.last_enact_reasoning = _RANDOM_REASONING
         return chosen
 
+    def make_statement(
+        self,
+        enacted: Policy,
+        drawn_hand: Optional[list[Policy]],
+        chancellor_hand: Optional[list[Policy]],
+    ) -> Statement:
+        self.last_statement_reasoning = _RANDOM_REASONING
+        return Statement(
+            player_id=self.player.id, text="(silent)", reasoning=_RANDOM_REASONING
+        )
+
+    def update_predicted_roles(
+        self, statements_this_round: list[Statement]
+    ) -> dict[int, float]:
+        # Random agent doesn't update — runner uses heuristic for random mode.
+        self.last_update_reasoning = _RANDOM_REASONING
+        return {}
+
 
 @dataclass
 class LLMAgent:
@@ -90,10 +133,13 @@ class LLMAgent:
     client: object  # LLMClient or compatible (FakeLLMClient in tests)
     fallback: PlayerAgent
     history: list[RoundEvent] = field(default_factory=list)
+    private_log: list[str] = field(default_factory=list)
     last_nominate_reasoning: str = ""
     last_vote_reasoning: str = ""
     last_discard_reasoning: str = ""
     last_enact_reasoning: str = ""
+    last_statement_reasoning: str = ""
+    last_update_reasoning: str = ""
 
     # Prompts now live in src/prompts.py — easier to find and tweak.
 
@@ -104,7 +150,11 @@ class LLMAgent:
             return self._discard_fallback(hand)
 
         system = system_prompt(
-            self.player, self.personality, self.all_players, history=self.history
+            self.player,
+            self.personality,
+            self.all_players,
+            history=self.history,
+            private_log=self.private_log,
         )
         base_user = discard_prompt(hand)
         user = base_user
@@ -134,7 +184,11 @@ class LLMAgent:
             return self._enact_fallback(hand)
 
         system = system_prompt(
-            self.player, self.personality, self.all_players, history=self.history
+            self.player,
+            self.personality,
+            self.all_players,
+            history=self.history,
+            private_log=self.private_log,
         )
         base_user = enact_prompt(hand)
         user = base_user
@@ -165,7 +219,11 @@ class LLMAgent:
 
         eligible_ids = {p.id for p in eligible}
         system = system_prompt(
-            self.player, self.personality, self.all_players, history=self.history
+            self.player,
+            self.personality,
+            self.all_players,
+            history=self.history,
+            private_log=self.private_log,
         )
         base_user = nominate_prompt(eligible)
         user = base_user
@@ -195,7 +253,11 @@ class LLMAgent:
             return self._vote_fallback(president, nominee)
 
         system = system_prompt(
-            self.player, self.personality, self.all_players, history=self.history
+            self.player,
+            self.personality,
+            self.all_players,
+            history=self.history,
+            private_log=self.private_log,
         )
         base_user = vote_prompt(president, nominee)
         user = base_user
@@ -219,6 +281,130 @@ class LLMAgent:
             file=sys.stderr,
         )
         return self._vote_fallback(president, nominee)
+
+    # --- discussion phase ----------------------------------------------------
+
+    def make_statement(
+        self,
+        enacted: Policy,
+        drawn_hand: Optional[list[Policy]],
+        chancellor_hand: Optional[list[Policy]],
+    ) -> Statement:
+        if getattr(self.client, "is_exhausted", False):
+            self.last_statement_reasoning = _FALLBACK_REASONING
+            return Statement(
+                player_id=self.player.id, text="(silent)", reasoning=_FALLBACK_REASONING
+            )
+
+        # We need round context for the prompt — pulled from the most recent
+        # appended history entry by the runner (which is what we'll do for the
+        # update call too). For the statement call the runner passes the round
+        # context via the prompt directly using the data it already has.
+        # The agent itself doesn't know the president/chancellor ids unless
+        # we plumb them; keep this simple by deriving them from history[-1]
+        # if available, falling back to "?" sentinels otherwise.
+        if self.history:
+            last = self.history[-1]
+            pres_id, chan_id = last.president_id, last.chancellor_id
+            l_tally, f_tally = last.liberal_tally, last.fascist_tally
+        else:
+            pres_id = chan_id = self.player.id
+            l_tally = f_tally = 0
+
+        system = system_prompt(
+            self.player,
+            self.personality,
+            self.all_players,
+            history=self.history,
+            private_log=self.private_log,
+        )
+        base_user = statement_prompt(
+            enacted=enacted,
+            drawn_hand=drawn_hand,
+            chancellor_hand=chancellor_hand,
+            liberal_tally=l_tally,
+            fascist_tally=f_tally,
+            president_id=pres_id,
+            chancellor_id=chan_id,
+        )
+        user = base_user
+
+        for _ in range(2):
+            try:
+                reply = self.client.chat(system, user, json_mode=True)
+            except RuntimeError:
+                self.last_statement_reasoning = _FALLBACK_REASONING
+                return Statement(
+                    player_id=self.player.id,
+                    text="(silent)",
+                    reasoning=_FALLBACK_REASONING,
+                )
+            parsed = self._parse_statement_reply(reply)
+            if parsed is not None:
+                text, reasoning = parsed
+                self.last_statement_reasoning = reasoning
+                return Statement(
+                    player_id=self.player.id, text=text, reasoning=reasoning
+                )
+            user = retry_prompt(base_user, "missing or invalid 'statement' field")
+
+        print(
+            f"[agent] Player {self.player.id} LLM gave invalid statements twice; "
+            "falling silent",
+            file=sys.stderr,
+        )
+        self.last_statement_reasoning = _FALLBACK_REASONING
+        return Statement(
+            player_id=self.player.id, text="(silent)", reasoning=_FALLBACK_REASONING
+        )
+
+    def update_predicted_roles(
+        self, statements_this_round: list[Statement]
+    ) -> dict[int, float]:
+        if getattr(self.client, "is_exhausted", False):
+            self.last_update_reasoning = _FALLBACK_REASONING
+            return dict(self.personality.predicted_roles)
+
+        system = system_prompt(
+            self.player,
+            self.personality,
+            self.all_players,
+            history=self.history,
+            private_log=self.private_log,
+        )
+        base_user = update_predicted_roles_prompt(
+            current_predicted_roles=self.personality.predicted_roles,
+            statements=statements_this_round,
+        )
+        user = base_user
+
+        allowed_ids = {
+            p.id for p in self.all_players if p.id != self.player.id
+        }
+
+        for _ in range(2):
+            try:
+                reply = self.client.chat(system, user, json_mode=True)
+            except RuntimeError:
+                self.last_update_reasoning = _FALLBACK_REASONING
+                return dict(self.personality.predicted_roles)
+            parsed = self._parse_update_reply(reply, allowed_ids)
+            if parsed is not None:
+                deltas, reasoning = parsed
+                self.last_update_reasoning = reasoning
+                # Apply: keep existing values, override the keys in deltas.
+                for pid, val in deltas.items():
+                    self.personality.predicted_roles[pid] = max(-1.0, min(1.0, val))
+                return dict(self.personality.predicted_roles)
+            user = retry_prompt(base_user, "missing/invalid 'predicted_roles' field")
+
+        print(
+            f"[agent] Player {self.player.id} LLM gave invalid role-updates twice; "
+            "preserving previous values",
+            file=sys.stderr,
+        )
+        self.last_update_reasoning = _FALLBACK_REASONING
+        return dict(self.personality.predicted_roles)
 
     # --- fallbacks (annotate reasoning so the dashboard explains the source) -
 
@@ -261,6 +447,50 @@ class LLMAgent:
         if not isinstance(reasoning, str):
             reasoning = ""
         return choice, reasoning
+
+    @staticmethod
+    def _parse_statement_reply(reply: str) -> Optional[tuple[str, str]]:
+        try:
+            data = json.loads(reply or "")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        text = data.get("statement")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        reasoning = data.get("reasoning", "")
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        return text.strip(), reasoning
+
+    @staticmethod
+    def _parse_update_reply(
+        reply: str, allowed_ids: set[int]
+    ) -> Optional[tuple[dict[int, float], str]]:
+        try:
+            data = json.loads(reply or "")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        raw = data.get("predicted_roles")
+        if not isinstance(raw, dict):
+            return None
+        deltas: dict[int, float] = {}
+        for k, v in raw.items():
+            try:
+                pid = int(k)
+            except (TypeError, ValueError):
+                continue
+            if pid not in allowed_ids:
+                continue
+            if isinstance(v, (int, float)):
+                deltas[pid] = float(v)
+        reasoning = data.get("reasoning", "")
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        return deltas, reasoning
 
     @staticmethod
     def _parse_indexed_reply(

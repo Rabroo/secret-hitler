@@ -38,6 +38,14 @@ class Player:
 
 
 @dataclass
+class Statement:
+    """One public statement made during a discussion round."""
+    player_id: int
+    text: str           # broadcast publicly
+    reasoning: str = "" # operator-only — model's private rationale
+
+
+@dataclass
 class RoundEvent:
     """Public facts of one round — what every player at the table can see."""
     round_num: int
@@ -48,6 +56,7 @@ class RoundEvent:
     enacted: Optional[Policy]
     liberal_tally: int
     fascist_tally: int
+    statements: list[Statement] = field(default_factory=list)
 
 
 @dataclass
