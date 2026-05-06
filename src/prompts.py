@@ -30,8 +30,10 @@ Public roster: {roster}.
 Rules summary:
 - Liberals win by enacting 5 Liberal policies or executing Hitler.
 - Fascists win by enacting 6 Fascist policies, or by electing Hitler as Chancellor after 3 Fascist policies are enacted.
+- Deck composition: 6 LIBERAL + 11 FASCIST policies (17 total). Fascist policies are nearly twice as common in the deck — a single Fascist enaction is NOT strong evidence on its own. Weight repeated Fascist enactions and clear forced-Liberal-discard situations more heavily than one-off draws.
 - 5-player term limit: only the previous *Chancellor* is term-limited; the previous President is still eligible to be Chancellor next round.
-- When citing past rounds, only cite events as they appear in the GAME HISTORY block above. Do not invent, infer, or paraphrase past events.
+- Read the ENTIRE GAME HISTORY block. Each entry tells you the round number, who was President, who was Chancellor, vote breakdown, what was enacted, and the running tally. The CURRENT round is one greater than the last entry in GAME HISTORY.
+- When citing past rounds, only cite events as they appear in the GAME HISTORY block. Do not invent, infer, or paraphrase past events.
 - Do NOT claim to have been President, Chancellor, or to have drawn cards in any round unless the GAME HISTORY or your PRIVATE KNOWLEDGE says so. Inventing a role you didn't hold is the easiest lie to refute.
 - Be strategic and stay in character. Never reveal your role unless doing so helps you win.{role_hint}
 
@@ -39,8 +41,9 @@ You must reply with valid JSON only."""
 
 
 _LIBERAL_HINT = (
-    "\n- Liberal: distrust governments that enact Fascist policies. Deck is "
-    "11F/6L so a Liberal enaction is a meaningful trust signal."
+    "\n- Liberal: distrust governments that repeatedly enact Fascist policies, "
+    "but remember the deck composition (already noted in rules) — a single "
+    "Fascist enaction can be unlucky. Look for forced-Liberal-discard tells."
 )
 
 _FASCIST_HINT = (
@@ -100,9 +103,17 @@ def _team_identity_block(
 def format_history(history: list[RoundEvent]) -> str:
     """Render the public game-history block for the system prompt."""
     if not history:
-        return "GAME HISTORY: (no rounds completed yet — this is round 1)."
+        return (
+            "GAME HISTORY: (no rounds completed yet — you are CURRENTLY "
+            "playing ROUND 1)."
+        )
 
-    lines = ["GAME HISTORY (public — every player sees this):"]
+    current_round = len(history) + 1
+    lines = [
+        f"GAME HISTORY (public — every player sees this; you are CURRENTLY "
+        f"playing ROUND {current_round}; rounds {1}..{len(history)} below "
+        f"are PAST rounds, do not confuse them with the current round):"
+    ]
     for ev in history:
         ja_ids = [pid for pid, v in sorted(ev.votes.items()) if v]
         nein_ids = [pid for pid, v in sorted(ev.votes.items()) if not v]

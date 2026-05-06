@@ -85,6 +85,23 @@ def test_format_history_empty_says_round_1():
     assert "round 1" in text.lower()
 
 
+def test_format_history_includes_current_round_marker_with_history():
+    ev = RoundEvent(
+        round_num=1,
+        president_id=1,
+        chancellor_id=3,
+        election_passed=True,
+        votes={1: True, 2: True, 3: True, 4: True, 5: True},
+        enacted=Policy.LIBERAL,
+        liberal_tally=1,
+        fascist_tally=0,
+    )
+    text = format_history([ev])
+    # After 1 historical round, the current round being played is round 2.
+    assert "ROUND 2" in text
+    assert "PAST" in text or "past" in text.lower()
+
+
 def test_format_history_passing_round_shows_gov_and_enaction():
     ev = RoundEvent(
         round_num=1,
