@@ -17,6 +17,17 @@ For most situations the CLI flags on `python3 -m src.runner start` are enough:
 
 Use a script when you need finer control — e.g. comparing two runs that differ only in one decision.
 
+## Visualising a game
+
+Add `--save-log path.json` to any runner invocation (or run a scenario script and pipe through the runner) to emit a JSON game log, then:
+
+```
+pip install streamlit pandas        # one-time, optional dep
+streamlit run viewer/streamlit_app.py -- path.json
+```
+
+The viewer shows: roster + outcome, per-round bar charts of every player's `predicted_roles` after each round, and a trajectory tab for any (viewer, target) pair across rounds.
+
 ## Available scenarios
 
 - **`force_hitler_chancellor`** — Hitler is the only valid Chancellor; observe whether Liberals approve.

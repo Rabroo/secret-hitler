@@ -11,6 +11,8 @@ LLM-backed agents (requires OPENAI_API_KEY in .env).
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 from src.agents import (
     LLMAgent,
@@ -291,6 +293,7 @@ def start_game(
     stack_deck: list[Policy] | None = None,
     discussion: bool = True,
     llm_role_updates: bool = True,
+    save_log: str | None = None,
 ) -> GameState:
     players = assign_roles(seed=seed, forced_roles=forced_roles)
     print(_render_operator_view(players))
@@ -319,6 +322,28 @@ def start_game(
     discard = make_discard_fn(agents)
     enact = make_enact_fn(agents)
     deck = PolicyDeck(seed=seed, draw_pile=stack_deck)
+
+    # Optional JSON game log — captures per-round snapshots so the streamlit
+    # viewer (or any other tool) can replay the game later.
+    log: dict | None = None
+    if save_log is not None:
+        log = {
+            "metadata": {
+                "seed": seed,
+                "rounds_requested": rounds,
+                "agents_mode": agents_mode,
+                "model": model if agents_mode == "llm" else None,
+                "discussion": discussion,
+                "llm_role_updates": llm_role_updates,
+            },
+            "operator_view": {
+                str(p.id): p.role.value.upper() for p in players
+            },
+            "initial_predicted_roles": _snapshot_predicted_roles(personalities),
+            "rounds": [],
+            "winner": None,
+            "winning_reason": None,
+        }
 
     for round_num in range(1, rounds + 1):
         president = state.players[state.president_idx]
@@ -483,13 +508,127 @@ def start_game(
                 )
             )
 
+        if log is not None:
+            log["rounds"].append(
+                _build_round_log_entry(
+                    round_num=round_num,
+                    president=president,
+                    chosen=chosen,
+                    result=result,
+                    leg=leg,
+                    state=state,
+                    statements=statements,
+                    agents=agents,
+                    players=players,
+                    personalities=personalities,
+                )
+            )
+
         if state.winner is not None:
             print(_render_winner_banner(state))
             break
 
         advance_presidency(state)
 
+    if log is not None and save_log is not None:
+        log["winner"] = state.winner.value if state.winner is not None else None
+        log["winning_reason"] = state.winning_reason
+        Path(save_log).write_text(json.dumps(log, indent=2))
+
     return state
+
+
+def _snapshot_predicted_roles(
+    personalities: dict[int, Personality],
+) -> dict[str, dict[str, float]]:
+    return {
+        str(viewer): {str(pid): score for pid, score in pers.predicted_roles.items()}
+        for viewer, pers in personalities.items()
+    }
+
+
+def _build_decisions_dict(
+    agents: dict[int, PlayerAgent],
+    players: list[Player],
+    president: Player,
+    chosen: Player,
+    result: ElectionResult,
+    leg: LegislativeSessionResult | None,
+) -> dict[str, dict]:
+    decs: dict[str, dict] = {}
+    for p in players:
+        if not p.alive:
+            continue
+        agent = agents[p.id]
+        entry: dict = {}
+        if p.id == president.id:
+            entry["nominate"] = {
+                "choice": chosen.id,
+                "reasoning": agent.last_nominate_reasoning,
+            }
+            if leg is not None:
+                entry["discard"] = {
+                    "policy": leg.discarded_by_president.value.upper(),
+                    "reasoning": agent.last_discard_reasoning,
+                }
+        if p.id == chosen.id and leg is not None:
+            entry["enact"] = {
+                "policy": leg.enacted.value.upper(),
+                "reasoning": agent.last_enact_reasoning,
+            }
+        if p.id in result.votes:
+            entry["vote"] = {
+                "value": result.votes[p.id],
+                "reasoning": agent.last_vote_reasoning,
+            }
+        decs[str(p.id)] = entry
+    return decs
+
+
+def _build_round_log_entry(
+    round_num: int,
+    president: Player,
+    chosen: Player,
+    result: ElectionResult,
+    leg: LegislativeSessionResult | None,
+    state: GameState,
+    statements: list[Statement],
+    agents: dict[int, PlayerAgent],
+    players: list[Player],
+    personalities: dict[int, Personality],
+) -> dict:
+    return {
+        "round_num": round_num,
+        "president_id": president.id,
+        "chancellor_id": chosen.id,
+        "votes": {str(k): v for k, v in result.votes.items()},
+        "election_passed": result.passed,
+        "policy_session": (
+            {
+                "drawn": [p.value.upper() for p in leg.drawn],
+                "discarded_by_president": leg.discarded_by_president.value.upper(),
+                "handed_to_chancellor": [
+                    p.value.upper() for p in leg.handed_to_chancellor
+                ],
+                "enacted": leg.enacted.value.upper(),
+                "discarded_by_chancellor": leg.discarded_by_chancellor.value.upper(),
+            }
+            if leg is not None
+            else None
+        ),
+        "tally_after": {
+            "liberal": state.liberal_policies_enacted,
+            "fascist": state.fascist_policies_enacted,
+        },
+        "statements": [
+            {"player_id": s.player_id, "text": s.text, "reasoning": s.reasoning}
+            for s in statements
+        ],
+        "decisions": _build_decisions_dict(
+            agents, players, president, chosen, result, leg
+        ),
+        "predicted_roles_after": _snapshot_predicted_roles(personalities),
+    }
 
 
 def _render_winner_banner(state: GameState) -> str:
@@ -563,6 +702,13 @@ def main() -> None:
         help="Skip LLM-driven predicted_roles revision (use heuristic). "
         "Saves ~3 LLM calls per enacted round; statements still happen.",
     )
+    start.add_argument(
+        "--save-log",
+        type=str,
+        default=None,
+        help="Write a JSON game log (per-round predicted_roles + decisions) "
+        "for the streamlit viewer or other post-game analysis.",
+    )
 
     args = parser.parse_args()
     if args.command == "start":
@@ -584,6 +730,7 @@ def main() -> None:
             ),
             discussion=not args.no_discussion,
             llm_role_updates=not args.no_llm_updates,
+            save_log=args.save_log,
         )
 
 

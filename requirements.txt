@@ -1,3 +1,8 @@
 openai>=1.0.0
 python-dotenv>=1.0.0
 pytest>=7.0.0
+
+# --- viewer (optional) ---
+# Only needed for `streamlit run viewer/streamlit_app.py -- game.json`
+streamlit>=1.30
+pandas>=2.0
