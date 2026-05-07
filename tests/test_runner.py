@@ -111,15 +111,27 @@ def _parse_elected_chancellors(out: str) -> list[int]:
 
 def test_start_game_term_limit_excludes_previous_elected_chancellor(capsys):
     # 16 rounds at ~50% pass rate should yield several successful elections
-    # for the term-limit assertion to bite on.
-    start_game(seed=42, rounds=16)
-    out = capsys.readouterr().out
-    elected = _parse_elected_chancellors(out)
-    assert len(elected) >= 2, (
-        f"Need >=2 successful elections to test term limits; got {len(elected)}"
-    )
-    for prev, curr in zip(elected, elected[1:]):
-        assert prev != curr, f"Same chancellor elected back-to-back: {prev}"
+    # for the term-limit assertion to bite on. Chaos enactions reset term
+    # limits, so we check the assertion only between consecutive elections
+    # that did NOT have a chaos event between them.
+    state = start_game(seed=42, rounds=16)
+    capsys.readouterr()
+    # Walk history in order, tracking the previous elected chancellor and
+    # resetting that pointer whenever chaos fires in between.
+    prev_elected: int | None = None
+    saw_at_least_one_pair = False
+    for ev in state.history:
+        if ev.chaos_enacted is not None:
+            prev_elected = None
+        if ev.election_passed:
+            if prev_elected is not None:
+                saw_at_least_one_pair = True
+                assert ev.chancellor_id != prev_elected, (
+                    f"Same chancellor elected back-to-back without chaos: "
+                    f"{prev_elected}"
+                )
+            prev_elected = ev.chancellor_id
+    assert saw_at_least_one_pair, "Need >=2 chaos-free consecutive elections"
 
 
 # --- dashboard ---

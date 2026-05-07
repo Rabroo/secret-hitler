@@ -31,6 +31,7 @@ Rules summary:
 - Liberals win by enacting 5 Liberal policies or executing Hitler.
 - Fascists win by enacting 6 Fascist policies, or by electing Hitler as Chancellor after 3 Fascist policies are enacted.
 - Deck composition: 6 LIBERAL + 11 FASCIST policies (17 total). Fascist policies are nearly twice as common in the deck — a single Fascist enaction is NOT strong evidence on its own. Weight repeated Fascist enactions and clear forced-Liberal-discard situations more heavily than one-off draws.
+- Election tracker: each failed election advances a counter. After three failed elections in a row, the country falls into chaos: the top of the deck auto-enacts (no Pres/Chan involved), term limits reset, and the tracker resets. Successful elections also reset the tracker.
 - 5-player term limit: only the previous *Chancellor* is term-limited; the previous President is still eligible to be Chancellor next round.
 - Read the ENTIRE GAME HISTORY block. Each entry tells you the round number, who was President, who was Chancellor, vote breakdown, what was enacted, and the running tally. The CURRENT round is one greater than the last entry in GAME HISTORY.
 - When citing past rounds, only cite events as they appear in the GAME HISTORY block. Do not invent, infer, or paraphrase past events.
@@ -156,7 +157,8 @@ def format_history(history: list[RoundEvent]) -> str:
                 lines.append(f'      P{s.player_id}: "{s.text}"')
     last = history[-1]
     lines.append(
-        f"Current tally: L={last.liberal_tally} F={last.fascist_tally}."
+        f"Current tally: L={last.liberal_tally} F={last.fascist_tally}. "
+        f"Election tracker: {last.failed_elections_after}/3."
     )
     return "\n".join(lines)
 

@@ -57,6 +57,10 @@ class RoundEvent:
     liberal_tally: int
     fascist_tally: int
     statements: list[Statement] = field(default_factory=list)
+    # Set when the third consecutive failed election triggered a chaos enaction
+    # this round. None on normal rounds.
+    chaos_enacted: Optional[Policy] = None
+    failed_elections_after: int = 0
 
 
 @dataclass
@@ -67,6 +71,7 @@ class GameState:
     last_elected_chancellor_id: Optional[int] = None
     liberal_policies_enacted: int = 0
     fascist_policies_enacted: int = 0
+    failed_elections: int = 0
     history: list[RoundEvent] = field(default_factory=list)
     winner: Optional["Faction"] = None
     winning_reason: Optional[str] = None
@@ -246,6 +251,32 @@ def _remove_policy(hand: list[Policy], chosen: Policy) -> list[Policy]:
     remaining = list(hand)
     remaining.remove(chosen)
     return remaining
+
+
+_CHAOS_THRESHOLD = 3
+
+
+def chaos_enact(state: GameState, deck: PolicyDeck) -> Policy:
+    """Auto-enact the top of the deck after 3 failed elections.
+
+    Per the rulebook:
+      - The next policy on top of the deck is enacted (no Pres/Chan involved).
+      - The election tracker resets to 0.
+      - Term limits reset (last elected pres + chan are cleared).
+      - The President does NOT get a presidential power from a chaos enaction.
+
+    Caller is responsible for win-condition check (a chaos enaction can finish
+    the game).
+    """
+    drawn = deck.draw(1)[0]
+    if drawn is Policy.LIBERAL:
+        state.liberal_policies_enacted += 1
+    else:
+        state.fascist_policies_enacted += 1
+    state.failed_elections = 0
+    state.last_elected_president_id = None
+    state.last_elected_chancellor_id = None
+    return drawn
 
 
 _LIBERAL_ENACTION_DELTA = 0.2   # Liberal viewer becomes more confident the gov is Liberal

@@ -34,6 +34,7 @@ from src.game import (
     Statement,
     advance_presidency,
     assign_roles,
+    chaos_enact,
     check_winner,
     eligible_chancellors,
     legislative_session,
@@ -259,6 +260,7 @@ def _render_round(
     result: ElectionResult,
     leg: LegislativeSessionResult | None,
     state: GameState,
+    chaos_policy: "Policy | None" = None,
 ) -> str:
     votes_str = ", ".join(
         f"{pid}={'ja' if v else 'nein'}" for pid, v in sorted(result.votes.items())
@@ -278,6 +280,16 @@ def _render_round(
             f"Tally: L={state.liberal_policies_enacted} "
             f"F={state.fascist_policies_enacted}"
         )
+    if not result.passed:
+        if chaos_policy is not None:
+            lines.append(
+                f"Election tracker: 3/3 — CHAOS! Auto-enacted: "
+                f"{chaos_policy.value.upper()}. "
+                f"Tally now: L={state.liberal_policies_enacted} "
+                f"F={state.fascist_policies_enacted}. Term limits reset."
+            )
+        else:
+            lines.append(f"Election tracker: {state.failed_elections}/3")
     return "\n".join(lines)
 
 
@@ -353,7 +365,10 @@ def start_game(
 
         leg: LegislativeSessionResult | None = None
         statements: list[Statement] = []
+        chaos_policy: Policy | None = None
         if result.passed:
+            # Successful election resets the election tracker.
+            state.failed_elections = 0
             # Hitler-Chancellor-at-F>=3 win is checked BEFORE the legislative
             # session — Fascists win the moment Hitler takes the seat.
             winner = check_winner(state, just_elected_chancellor=chosen)
@@ -475,6 +490,24 @@ def start_game(
                     state.winning_reason = "Fascists enacted 6 Fascist policies."
             state.last_elected_president_id = president.id
             state.last_elected_chancellor_id = chosen.id
+        else:
+            # Failed election: bump tracker. After 3 in a row, chaos auto-enacts
+            # the top of the deck, resets the tracker, resets term limits, and
+            # we re-check tally wins (chaos at L=4 or F=5 finishes the game).
+            state.failed_elections += 1
+            if state.failed_elections >= 3:
+                chaos_policy = chaos_enact(state, deck)
+                winner = check_winner(state)
+                if winner is Faction.LIBERAL:
+                    state.winner = winner
+                    state.winning_reason = (
+                        "Liberals enacted 5 Liberal policies (via chaos)."
+                    )
+                elif winner is Faction.FASCIST:
+                    state.winner = winner
+                    state.winning_reason = (
+                        "Fascists enacted 6 Fascist policies (via chaos)."
+                    )
 
         state.history.append(
             RoundEvent(
@@ -487,10 +520,17 @@ def start_game(
                 liberal_tally=state.liberal_policies_enacted,
                 fascist_tally=state.fascist_policies_enacted,
                 statements=list(statements),
+                chaos_enacted=chaos_policy,
+                failed_elections_after=state.failed_elections,
             )
         )
 
-        print(_render_round(round_num, president, candidates, chosen, result, leg, state))
+        print(
+            _render_round(
+                round_num, president, candidates, chosen, result, leg, state,
+                chaos_policy=chaos_policy,
+            )
+        )
 
         if dashboard:
             print(
