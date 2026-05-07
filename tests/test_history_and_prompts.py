@@ -211,6 +211,81 @@ def test_system_prompt_liberal_has_no_teammate_line():
     assert "teammate" not in text.lower()
 
 
+def test_liberal_system_prompt_does_not_reveal_other_players_roles():
+    """A Liberal's prompt must contain THEIR OWN role and nothing about
+    anyone else's. The roster is just IDs."""
+    player, personality, all_players = _liberal_player_and_personality()
+    text = system_prompt(player, personality, all_players, history=[])
+
+    # Their own role appears once (in "Your role: LIBERAL").
+    assert "Your role: LIBERAL" in text
+
+    # No other player's role should be paired with their ID anywhere.
+    forbidden_patterns = []
+    for pid in (2, 3, 4, 5):
+        for role_label in ("LIBERAL", "FASCIST", "HITLER"):
+            forbidden_patterns.extend([
+                f"P{pid} {role_label}",
+                f"Player {pid} {role_label}",
+                f"P{pid} ({role_label})",
+                f"Player {pid} ({role_label})",
+                f"Player {pid}: {role_label}",
+                f"P{pid}: {role_label}",
+                f"P{pid} is {role_label}",
+                f"P{pid} is a {role_label}",
+                f"Player {pid} is {role_label}",
+            ])
+    for pattern in forbidden_patterns:
+        assert pattern not in text, f"Role leak: {pattern!r} appears in Liberal prompt"
+
+    # Liberals see no teammate identification.
+    assert "teammate" not in text.lower()
+    assert "your fascist" not in text.lower()
+    assert "you and player" not in text.lower()
+
+
+def test_liberal_predicted_roles_carry_no_role_information():
+    """Liberal viewers' initial predicted_roles are all 0.0 — the prompt
+    must show 0.0 for every other player, not any signed value that hints
+    at known roles."""
+    player, personality, all_players = _liberal_player_and_personality()
+    text = system_prompt(player, personality, all_players, history=[])
+    # Should have +0.00 for every other player. The legend mentions +1/-1
+    # generically; what matters is no specific player is shown at ±1.
+    for pid in (2, 3, 4, 5):
+        assert f"Player {pid}: +0.00" in text
+        assert f"Player {pid}: +1.00" not in text
+        assert f"Player {pid}: -1.00" not in text
+
+
+def test_history_block_in_liberal_prompt_does_not_include_roles():
+    """Even with history populated, role labels must never appear next to
+    player IDs — only public events."""
+    player, personality, all_players = _liberal_player_and_personality()
+    history = [
+        RoundEvent(
+            round_num=1,
+            president_id=3,  # Player 3 is the Fascist in this layout
+            chancellor_id=5,
+            election_passed=True,
+            votes={1: True, 2: True, 3: True, 4: True, 5: True},
+            enacted=Policy.FASCIST,
+            liberal_tally=0,
+            fascist_tally=1,
+        )
+    ]
+    text = system_prompt(player, personality, all_players, history=history)
+    # Should mention P3 and P5 in history, but NEVER as "P3 (FASCIST)" etc.
+    assert "P3" in text
+    for pid in (1, 2, 3, 4, 5):
+        for role_label in ("LIBERAL", "FASCIST", "HITLER"):
+            # Skip the player's own role (which appears in "Your role: LIBERAL")
+            if pid == player.id and role_label == "LIBERAL":
+                continue
+            assert f"P{pid} {role_label}" not in text
+            assert f"Player {pid} {role_label}" not in text
+
+
 # --- LLMAgent uses the history reference ------------------------------------
 
 

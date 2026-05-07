@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Optional
 
 
 _DEFAULT_MODEL = "gpt-5-mini"
 _DEFAULT_BUDGET = 50_000
 _CHARS_PER_TOKEN_ESTIMATE = 4  # conservative fallback if tiktoken unavailable
+
+# Retry transient errors (network / 5xx / rate-limit). Backoff: 1s, 2s, 4s.
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [1.0, 2.0, 4.0]
 
 
 def _estimate_tokens(text: str) -> int:
@@ -32,7 +37,13 @@ class LLMClient:
         token_budget: int = _DEFAULT_BUDGET,
     ):
         # Lazy import so tests don't require the openai SDK.
-        from openai import OpenAI
+        from openai import (
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            OpenAI,
+            RateLimitError,
+        )
 
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
@@ -43,6 +54,12 @@ class LLMClient:
         self.model = model
         self.token_budget = token_budget
         self.tokens_used = 0
+        self._retryable = (
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
 
     @property
     def is_exhausted(self) -> bool:
@@ -62,7 +79,30 @@ class LLMClient:
         }
         if json_mode:
             request["response_format"] = {"type": "json_object"}
-        response = self._client.chat.completions.create(**request)
+
+        # Retry on transient network/5xx/rate-limit errors. After all retries
+        # exhausted we raise RuntimeError so the agent's fallback path kicks
+        # in (random brain) rather than crashing the whole game.
+        response = None
+        last_err: Optional[Exception] = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                response = self._client.chat.completions.create(**request)
+                break
+            except self._retryable as e:
+                last_err = e
+                if attempt < _MAX_RETRIES - 1:
+                    delay = _RETRY_DELAYS[attempt]
+                    print(
+                        f"[llm] {type(e).__name__} on attempt "
+                        f"{attempt + 1}/{_MAX_RETRIES}; retrying in {delay:.0f}s",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+        if response is None:
+            raise RuntimeError(
+                f"LLM API failed after {_MAX_RETRIES} retries: {last_err}"
+            )
         usage = getattr(response, "usage", None)
         if usage is not None and getattr(usage, "total_tokens", None) is not None:
             self.tokens_used += usage.total_tokens
