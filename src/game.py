@@ -61,6 +61,9 @@ class RoundEvent:
     # this round. None on normal rounds.
     chaos_enacted: Optional[Policy] = None
     failed_elections_after: int = 0
+    # Set when the President exercised the execution power this round (F=4 or
+    # F=5 normal enaction). None otherwise.
+    executed_player_id: Optional[int] = None
 
 
 @dataclass
@@ -81,6 +84,7 @@ ChooseFn = Callable[[Player, list[Player]], Player]
 VoteFn = Callable[[Player, Player, Player], bool]
 DiscardFn = Callable[[Player, list[Policy]], Policy]
 EnactFn = Callable[[Player, list[Policy]], Policy]
+ExecuteFn = Callable[[Player, list[Player]], Player]
 
 
 @dataclass
@@ -195,10 +199,14 @@ def check_winner(
 ) -> Optional[Faction]:
     """Return the winning faction, or None if no win condition is met.
 
-    Pure function — caller is responsible for assigning state.winner. Tally
-    checks always run; the Hitler-Chancellor check only fires when a chancellor
-    is supplied (i.e., right after a successful election).
+    Pure function — caller is responsible for assigning state.winner. The
+    Hitler-dead check runs first (it overrides everything). Tally checks
+    always run. The Hitler-Chancellor-elected check only fires when a
+    chancellor is supplied (i.e., right after a successful election).
     """
+    # Liberal-execute-Hitler win — checked first, overrides all other rules.
+    if any(p.role is Role.HITLER and not p.alive for p in state.players):
+        return Faction.LIBERAL
     if state.liberal_policies_enacted >= _LIBERAL_POLICY_WIN_THRESHOLD:
         return Faction.LIBERAL
     if state.fascist_policies_enacted >= _FASCIST_POLICY_WIN_THRESHOLD:
@@ -210,6 +218,30 @@ def check_winner(
     ):
         return Faction.FASCIST
     return None
+
+
+def execute_player(
+    state: GameState,
+    president: Player,
+    execute_fn: ExecuteFn,
+) -> Player:
+    """Run the Presidential execution power and return the executed player.
+
+    Caller is responsible for the win-condition check (executing Hitler ends
+    the game). Power is offered when F=4 or F=5 is reached via a normal
+    legislative session (NOT via chaos).
+    """
+    eligible = [p for p in state.players if p.alive and p.id != president.id]
+    if not eligible:
+        raise RuntimeError("No eligible execution targets")
+    target = execute_fn(president, eligible)
+    if target not in eligible:
+        raise ValueError(
+            f"Player {target.id} is not an eligible execution target "
+            f"(eligible: {[p.id for p in eligible]})"
+        )
+    target.alive = False
+    return target
 
 
 def vote_chancellor(

@@ -21,6 +21,7 @@ from src.agents import (
     make_choose_fn,
     make_discard_fn,
     make_enact_fn,
+    make_execute_fn,
     make_vote_fn,
 )
 from src.game import (
@@ -37,6 +38,7 @@ from src.game import (
     chaos_enact,
     check_winner,
     eligible_chancellors,
+    execute_player,
     legislative_session,
     nominate_chancellor,
     update_predicted_roles_after_session,
@@ -261,6 +263,7 @@ def _render_round(
     leg: LegislativeSessionResult | None,
     state: GameState,
     chaos_policy: "Policy | None" = None,
+    executed_player_id: int | None = None,
 ) -> str:
     votes_str = ", ".join(
         f"{pid}={'ja' if v else 'nein'}" for pid, v in sorted(result.votes.items())
@@ -290,6 +293,11 @@ def _render_round(
             )
         else:
             lines.append(f"Election tracker: {state.failed_elections}/3")
+    if executed_player_id is not None:
+        target = next(p for p in state.players if p.id == executed_player_id)
+        lines.append(
+            f"Executed: Player {target.id} (was {target.role.value.upper()})."
+        )
     return "\n".join(lines)
 
 
@@ -333,6 +341,7 @@ def start_game(
     vote = make_vote_fn(agents)
     discard = make_discard_fn(agents)
     enact = make_enact_fn(agents)
+    execute = make_execute_fn(agents)
     deck = PolicyDeck(seed=seed, draw_pile=stack_deck)
 
     # Optional JSON game log — captures per-round snapshots so the streamlit
@@ -366,6 +375,7 @@ def start_game(
         leg: LegislativeSessionResult | None = None
         statements: list[Statement] = []
         chaos_policy: Policy | None = None
+        executed_player_id: int | None = None
         if result.passed:
             # Successful election resets the election tracker.
             state.failed_elections = 0
@@ -488,6 +498,23 @@ def start_game(
                 elif winner is Faction.FASCIST:
                     state.winner = winner
                     state.winning_reason = "Fascists enacted 6 Fascist policies."
+
+                # Presidential execution power at F=4 and F=5 — only fires
+                # on a normal legislative-session enaction (not chaos), and
+                # only if no winner has been declared yet this round.
+                if (
+                    state.winner is None
+                    and leg is not None
+                    and leg.enacted is Policy.FASCIST
+                    and state.fascist_policies_enacted in (4, 5)
+                ):
+                    target = execute_player(state, president, execute)
+                    executed_player_id = target.id
+                    # Did we just kill Hitler? Liberals win.
+                    winner = check_winner(state)
+                    if winner is Faction.LIBERAL:
+                        state.winner = winner
+                        state.winning_reason = "Liberals executed Hitler."
             state.last_elected_president_id = president.id
             state.last_elected_chancellor_id = chosen.id
         else:
@@ -522,6 +549,7 @@ def start_game(
                 statements=list(statements),
                 chaos_enacted=chaos_policy,
                 failed_elections_after=state.failed_elections,
+                executed_player_id=executed_player_id,
             )
         )
 
@@ -529,6 +557,7 @@ def start_game(
             _render_round(
                 round_num, president, candidates, chosen, result, leg, state,
                 chaos_policy=chaos_policy,
+                executed_player_id=executed_player_id,
             )
         )
 

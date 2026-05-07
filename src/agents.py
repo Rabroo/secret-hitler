@@ -21,6 +21,7 @@ from src.game import (
     ChooseFn,
     DiscardFn,
     EnactFn,
+    ExecuteFn,
     Player,
     Role,
     RoundEvent,
@@ -32,6 +33,7 @@ from src.policies import Policy
 from src.prompts import (
     discard_prompt,
     enact_prompt,
+    execute_prompt,
     lie_check_prompt,
     nominate_prompt,
     retry_prompt,
@@ -56,12 +58,14 @@ class PlayerAgent(Protocol):
     last_enact_reasoning: str
     last_statement_reasoning: str
     last_update_reasoning: str
+    last_execute_reasoning: str
     private_log: list[str]
 
     def nominate(self, eligible: list[Player]) -> Player: ...
     def vote(self, president: Player, nominee: Player) -> bool: ...
     def discard_policy(self, hand: list[Policy]) -> Policy: ...
     def enact_policy(self, hand: list[Policy]) -> Policy: ...
+    def execute_player(self, targets: list[Player]) -> Player: ...
     def make_statement(
         self,
         enacted: Policy,
@@ -88,6 +92,7 @@ class RandomAgent:
     last_enact_reasoning: str = ""
     last_statement_reasoning: str = ""
     last_update_reasoning: str = ""
+    last_execute_reasoning: str = ""
     private_log: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -111,6 +116,11 @@ class RandomAgent:
     def enact_policy(self, hand: list[Policy]) -> Policy:
         chosen = self._rng.choice(hand)
         self.last_enact_reasoning = _RANDOM_REASONING
+        return chosen
+
+    def execute_player(self, targets: list[Player]) -> Player:
+        chosen = self._rng.choice(targets)
+        self.last_execute_reasoning = _RANDOM_REASONING
         return chosen
 
     def make_statement(
@@ -152,6 +162,7 @@ class LLMAgent:
     last_enact_reasoning: str = ""
     last_statement_reasoning: str = ""
     last_update_reasoning: str = ""
+    last_execute_reasoning: str = ""
 
     # Prompts now live in src/prompts.py — easier to find and tweak.
 
@@ -190,6 +201,45 @@ class LLMAgent:
             file=sys.stderr,
         )
         return self._discard_fallback(hand)
+
+    def execute_player(self, targets: list[Player]) -> Player:
+        if getattr(self.client, "is_exhausted", False):
+            return self._execute_fallback(targets)
+
+        target_ids = {p.id for p in targets}
+        # The execution prompt needs the current Fascist tally; pull it from
+        # the latest history snapshot so we don't have to plumb state through.
+        f_tally = self.history[-1].fascist_tally if self.history else 0
+
+        system = system_prompt(
+            self.player,
+            self.personality,
+            self.all_players,
+            history=self.history,
+            private_log=self.private_log,
+        )
+        base_user = execute_prompt(targets, fascist_tally=f_tally)
+        user = base_user
+
+        for _ in range(2):
+            try:
+                reply = self.client.chat(system, user, json_mode=True)
+            except RuntimeError:
+                return self._execute_fallback(targets)
+
+            parsed = self._parse_execute_reply(reply, target_ids)
+            if parsed is not None:
+                target_id, reasoning = parsed
+                self.last_execute_reasoning = reasoning
+                return next(p for p in targets if p.id == target_id)
+            user = retry_prompt(base_user, "ineligible execute_id or invalid JSON")
+
+        print(
+            f"[agent] Player {self.player.id} LLM gave invalid execution targets twice; "
+            "falling back to random",
+            file=sys.stderr,
+        )
+        return self._execute_fallback(targets)
 
     def enact_policy(self, hand: list[Policy]) -> Policy:
         if getattr(self.client, "is_exhausted", False):
@@ -478,6 +528,11 @@ class LLMAgent:
         self.last_enact_reasoning = _FALLBACK_REASONING
         return result
 
+    def _execute_fallback(self, targets: list[Player]) -> Player:
+        result = self.fallback.execute_player(targets)
+        self.last_execute_reasoning = _FALLBACK_REASONING
+        return result
+
     # --- parsing -------------------------------------------------------------
 
     @staticmethod
@@ -541,6 +596,24 @@ class LLMAgent:
         if not isinstance(reasoning, str):
             reasoning = ""
         return deltas, reasoning
+
+    @staticmethod
+    def _parse_execute_reply(
+        reply: str, allowed_ids: set[int]
+    ) -> Optional[tuple[int, str]]:
+        try:
+            data = json.loads(reply or "")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        target_id = data.get("execute_id")
+        if not isinstance(target_id, int) or target_id not in allowed_ids:
+            return None
+        reasoning = data.get("reasoning", "")
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        return target_id, reasoning
 
     @staticmethod
     def _parse_indexed_reply(
@@ -609,3 +682,10 @@ def make_enact_fn(agents: dict[int, PlayerAgent]) -> EnactFn:
         return agents[chancellor.id].enact_policy(hand)
 
     return enact_fn
+
+
+def make_execute_fn(agents: dict[int, PlayerAgent]) -> ExecuteFn:
+    def execute_fn(president: Player, targets: list[Player]) -> Player:
+        return agents[president.id].execute_player(targets)
+
+    return execute_fn

@@ -32,6 +32,7 @@ Rules summary:
 - Fascists win by enacting 6 Fascist policies, or by electing Hitler as Chancellor after 3 Fascist policies are enacted.
 - Deck composition: 6 LIBERAL + 11 FASCIST policies (17 total). Fascist policies are nearly twice as common in the deck — a single Fascist enaction is NOT strong evidence on its own. Weight repeated Fascist enactions and clear forced-Liberal-discard situations more heavily than one-off draws.
 - Election tracker: each failed election advances a counter. After three failed elections in a row, the country falls into chaos: the top of the deck auto-enacts (no Pres/Chan involved), term limits reset, and the tracker resets. Successful elections also reset the tracker.
+- Presidential powers (5 players): when the 4th and 5th Fascist policy is enacted via a normal legislative session (NOT chaos), the President executes a player. If Hitler is executed, Liberals win the game immediately.
 - 5-player term limit: only the previous *Chancellor* is term-limited; the previous President is still eligible to be Chancellor next round.
 - Read the ENTIRE GAME HISTORY block. Each entry tells you the round number, who was President, who was Chancellor, vote breakdown, what was enacted, and the running tally. The CURRENT round is one greater than the last entry in GAME HISTORY.
 - When citing past rounds, only cite events as they appear in the GAME HISTORY block. Do not invent, infer, or paraphrase past events.
@@ -232,6 +233,19 @@ def discard_prompt(hand: list[Policy]) -> str:
         "Pick ONE index to discard. The other 2 go to the Chancellor.\n"
         'Reply as JSON: {"reasoning": "<one short sentence>", '
         '"discard_index": 0 | 1 | 2}'
+    )
+
+
+def execute_prompt(targets: list[Player], fascist_tally: int) -> str:
+    ids = [p.id for p in targets]
+    return (
+        "You must EXECUTE a player. The Fascist policy track has reached "
+        f"{fascist_tally} — this is a Presidential power. The chosen player "
+        "is removed from the game.\n"
+        f"Eligible targets (alive, not yourself): {ids}\n"
+        "If you execute Hitler, Liberals win the game immediately.\n"
+        'Reply as JSON: {"reasoning": "<one short sentence>", '
+        '"execute_id": <player id>}'
     )
 
 
