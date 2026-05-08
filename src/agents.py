@@ -689,3 +689,156 @@ def make_execute_fn(agents: dict[int, PlayerAgent]) -> ExecuteFn:
         return agents[president.id].execute_player(targets)
 
     return execute_fn
+
+
+# --- ScriptedAgent: force mechanical decisions, delegate reactive ones ------
+
+
+_SCRIPTED_REASONING = "(scripted)"
+
+
+@dataclass
+class ScriptedAgent:
+    """Wraps another PlayerAgent. Mechanical decisions can be pre-scripted via
+    the `scripted` dict; everything else (statements, predicted_role updates)
+    delegates to the wrapped agent. See specs/scripted_agent.md.
+    """
+
+    player: Player
+    fallback: PlayerAgent
+    scripted: dict = field(default_factory=dict)
+    private_log: list[str] = field(default_factory=list)
+    last_nominate_reasoning: str = ""
+    last_vote_reasoning: str = ""
+    last_discard_reasoning: str = ""
+    last_enact_reasoning: str = ""
+    last_statement_reasoning: str = ""
+    last_update_reasoning: str = ""
+    last_execute_reasoning: str = ""
+
+    def __post_init__(self) -> None:
+        # Share the same private_log object as the fallback so the runner's
+        # appends (which target agents[pid].private_log) are visible to the
+        # underlying LLMAgent's prompts.
+        self.private_log = self.fallback.private_log
+
+    def nominate(self, eligible: list[Player]) -> Player:
+        if "nominate" in self.scripted:
+            target_id = self.scripted["nominate"]
+            try:
+                target = next(p for p in eligible if p.id == target_id)
+            except StopIteration:
+                raise ValueError(
+                    f"Scripted nominate={target_id} but eligible candidates are "
+                    f"{[p.id for p in eligible]}"
+                )
+            self.last_nominate_reasoning = _SCRIPTED_REASONING
+            return target
+        result = self.fallback.nominate(eligible)
+        self.last_nominate_reasoning = self.fallback.last_nominate_reasoning
+        return result
+
+    def vote(self, president: Player, nominee: Player) -> bool:
+        if "vote" in self.scripted:
+            self.last_vote_reasoning = _SCRIPTED_REASONING
+            return bool(self.scripted["vote"])
+        result = self.fallback.vote(president, nominee)
+        self.last_vote_reasoning = self.fallback.last_vote_reasoning
+        return result
+
+    def discard_policy(self, hand: list[Policy]) -> Policy:
+        if "discard" in self.scripted:
+            target = self.scripted["discard"]
+            if target not in hand:
+                raise ValueError(
+                    f"Scripted discard={target.value} but hand is "
+                    f"{[p.value for p in hand]}"
+                )
+            self.last_discard_reasoning = _SCRIPTED_REASONING
+            return target
+        result = self.fallback.discard_policy(hand)
+        self.last_discard_reasoning = self.fallback.last_discard_reasoning
+        return result
+
+    def enact_policy(self, hand: list[Policy]) -> Policy:
+        if "enact" in self.scripted:
+            target = self.scripted["enact"]
+            if target not in hand:
+                raise ValueError(
+                    f"Scripted enact={target.value} but hand is "
+                    f"{[p.value for p in hand]}"
+                )
+            self.last_enact_reasoning = _SCRIPTED_REASONING
+            return target
+        result = self.fallback.enact_policy(hand)
+        self.last_enact_reasoning = self.fallback.last_enact_reasoning
+        return result
+
+    def execute_player(self, targets: list[Player]) -> Player:
+        if "execute" in self.scripted:
+            target_id = self.scripted["execute"]
+            try:
+                target = next(p for p in targets if p.id == target_id)
+            except StopIteration:
+                raise ValueError(
+                    f"Scripted execute={target_id} but eligible targets are "
+                    f"{[p.id for p in targets]}"
+                )
+            self.last_execute_reasoning = _SCRIPTED_REASONING
+            return target
+        result = self.fallback.execute_player(targets)
+        self.last_execute_reasoning = self.fallback.last_execute_reasoning
+        return result
+
+    # --- reactive calls always delegate ---
+
+    def make_statement(
+        self,
+        enacted: Policy,
+        drawn_hand: Optional[list[Policy]],
+        chancellor_hand: Optional[list[Policy]],
+        president_id: int = 0,
+        chancellor_id: int = 0,
+        liberal_tally: int = 0,
+        fascist_tally: int = 0,
+        prior_statements: Optional[list[Statement]] = None,
+    ) -> Statement:
+        result = self.fallback.make_statement(
+            enacted=enacted,
+            drawn_hand=drawn_hand,
+            chancellor_hand=chancellor_hand,
+            president_id=president_id,
+            chancellor_id=chancellor_id,
+            liberal_tally=liberal_tally,
+            fascist_tally=fascist_tally,
+            prior_statements=prior_statements,
+        )
+        self.last_statement_reasoning = self.fallback.last_statement_reasoning
+        return result
+
+    def update_predicted_roles(
+        self, statements_this_round: list[Statement]
+    ) -> dict[int, float]:
+        result = self.fallback.update_predicted_roles(statements_this_round)
+        self.last_update_reasoning = self.fallback.last_update_reasoning
+        return result
+
+
+def build_scripted_agents(
+    base_agents: dict[int, PlayerAgent],
+    scripts: dict[int, dict],
+) -> dict[int, PlayerAgent]:
+    """Wrap selected base_agents with ScriptedAgent. Untouched ids keep their
+    original agent (LLM, random, etc.). Returns a new dict; does not mutate
+    base_agents.
+    """
+    out: dict[int, PlayerAgent] = dict(base_agents)
+    for pid, script in scripts.items():
+        if pid not in out:
+            raise KeyError(f"Player {pid} not in base_agents")
+        out[pid] = ScriptedAgent(
+            player=out[pid].player,
+            fallback=out[pid],
+            scripted=dict(script),
+        )
+    return out
