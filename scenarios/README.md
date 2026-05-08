@@ -1,7 +1,5 @@
 # Scenarios
 
-Runnable scripts for inspecting how the agents behave in specific situations.
-
 Each script is invoked like:
 
 ```
@@ -19,7 +17,7 @@ Use a script when you need finer control — e.g. comparing two runs that differ
 
 ## Visualising a game
 
-Add `--save-log path.json` to any runner invocation (or run a scenario script and pipe through the runner) to emit a JSON game log, then:
+Add `--save-log path.json` to any runner invocation to emit a JSON game log, then:
 
 ```
 pip install streamlit pandas        # one-time, optional dep
@@ -28,23 +26,25 @@ streamlit run viewer/streamlit_app.py -- path.json
 
 The viewer shows: roster + outcome, per-round bar charts of every player's `predicted_roles` after each round, and a trajectory tab for any (viewer, target) pair across rounds.
 
-## Available scenarios
+## Available scripts
 
-### Free-decision (LLM chooses)
+### Experiments (research-framed, scripted)
+
+These force the *exact* sequence of mechanical events (nominate, vote, discard, enact) and run the same setup multiple times so you can collect quantitative data on how the LLMs *react* (statements + predicted_role updates). Each prints a per-variant summary table at the end with means and deltas, and writes per-variant CSVs to `--output-dir`.
+
+- **`exp_forced_vs_deliberate_F`** — *Can the LLM tell deck-driven F enactions apart from deliberately engineered ones?* Variant A: Liberal Pres FFF (forced) → Liberal Chan FF → F. Variant B: Fascist Pres FFL → discards Liberal → Liberal Chan FF → F. Same observable event in both; only the actual Pres role and the discard's intent differ. Headline: bystanders' mean predicted_role[Pres] in A vs B.
+- **`exp_chancellor_choice_cost`** — *What does an unforced Fascist enaction cost the Chancellor?* Same gov + same F+L hand both variants; Chancellor enacts L in A, F in B. Headline: Pres's mean predicted_role[Chan] in A vs B (Pres has private knowledge of F+L pass).
+- **`exp_tally_pressure`** — *Does the same event get interpreted differently at different boards?* Identical forced F enaction at start_tally L=0,F=0 / L=2,F=2 / L=0,F=3. Headline: bystanders' mean predicted_role[Pres] across the three boards.
+
+Cost: ~$1–1.50 per experiment at gpt-5 with `--runs 10`. Total ~$3.50 for all three.
+
+### Free-decision demos (LLM chooses, no scripting)
+
+These let the LLM choose the mechanical decisions; useful for showing the system works rather than for measuring specific deltas.
+
 - **`force_hitler_chancellor`** — Hitler is the only valid Chancellor; observe whether Liberals approve.
-- **`enacted_fascist_at_l0_f0`** — first round of the game, gov enacts a Fascist policy. Compare predicted_roles before and after.
-- **`round_1_fascist_enact`** — top of deck is FFF; pres has no Liberal to discard; observe how predicted_roles shift on a *forced* Fascist enaction (where the deck is to blame, not intent).
-- **`voting_under_f3_pressure`** — runs two games with identical setup, only `start-tally` differing (F=2 vs F=3). At F=3 a Hitler election wins for Fascists, so Liberals should vote much more cautiously. Compare the dashboards.
-- **`forced_FL_to_chancellor`** — Pres draws FFL → discards F → passes [F, L]. Two layouts: Liberal Chancellor (likely picks L) vs Fascist Chancellor (likely picks F and lies). Watch how the President's predicted_role of the Chancellor shifts in each.
-- **`repeat_fascist_enactor`** — first two rounds forced into F enactions, later draws lean Liberal. Multi-round trajectory of predicted_role for the player who ends up in two F-enacting governments.
-
-### Batch (run N times, emit CSVs)
-- **`batch_chancellor_FL`** — runs the F+L→Chancellor setup `--runs N` times (default 10) and emits aggregated CSVs (`predicted_roles.csv`, `decisions.csv`, `summary.csv`) into `--output-dir`. Use this when you need *quantitative* data on how the LLM's decisions and belief updates vary across identical scenarios.
-
-### Scripted (mechanical decisions forced, LLM only reacts)
-These force the *exact* sequence of mechanical events (nominate, vote, discard, enact) and let the LLMs only do the reactive work — statements + predicted_role updates. Useful when studying how players *interpret* a fixed event rather than studying how they *choose*.
-
-- **`scripted_fascist_president_FFL`** — Fascist President draws FFL, deliberately discards the Liberal, hands FF to a Liberal Chancellor who is forced to enact a Fascist policy. Watch whether Liberals correctly suspect the Fascist Pres or wrongly blame the scapegoated Liberal Chan.
-- **`scripted_FL_chancellor_compare`** — runs the same gov + F+L hand twice, once with the Chancellor enacting LIBERAL and once enacting FASCIST. Compare predicted_role deltas between the two games — the trust difference shows what an F-pick costs the Chancellor.
-
-Both scripted scenarios accept `--runs N --output-dir DIR --llm` to batch-run and emit CSVs (same format as `batch_chancellor_FL`).
+- **`enacted_fascist_at_l0_f0`** — first round of the game, gov enacts a Fascist policy.
+- **`round_1_fascist_enact`** — top of deck is FFF; Pres has no Liberal to discard.
+- **`voting_under_f3_pressure`** — same setup at F=2 vs F=3 to compare Liberal voting behaviour.
+- **`forced_FL_to_chancellor`** — Pres draws FFL → discards F → passes [F, L]; runs Liberal-Chan and Fascist-Chan layouts.
+- **`repeat_fascist_enactor`** — multi-round trajectory for a player who ends up in two F-enacting governments.
