@@ -44,6 +44,7 @@ class Variant:
     scenario_kwargs: dict[str, Any] = field(default_factory=dict)
     focus: list[tuple[int, int]] | None = None
     apply_until_round: int | None = None
+    private_log_seeds: dict[int, list[str]] = field(default_factory=dict)
 
 
 def run_experiment(
@@ -93,11 +94,14 @@ def _run_one(
 
     def patched(*args, **kwargs):
         base = real_build_agents(*args, **kwargs)
-        return build_scripted_agents(
+        wrapped = build_scripted_agents(
             base,
             variant.scripted,
             apply_until_round=variant.apply_until_round,
         )
+        if variant.private_log_seeds:
+            _inject_private_log_seeds(wrapped, variant.private_log_seeds)
+        return wrapped
 
     runner_module._build_agents = patched
     try:
@@ -109,6 +113,22 @@ def _run_one(
         start_game(seed=seed, save_log=save_log, **start_kwargs)
     finally:
         runner_module._build_agents = real_build_agents
+
+
+def _inject_private_log_seeds(
+    agents: dict[int, Any], seeds: dict[int, list[str]]
+) -> None:
+    """Append cover-story / hint strings to specific agents' private_log.
+
+    Used for deception experiments where we want to steer (not script) what
+    a Fascist player says in discussion. Because ScriptedAgent shares its
+    private_log list with its LLMAgent fallback, appending here is visible
+    to the next system_prompt call.
+    """
+    for pid, lines in seeds.items():
+        if pid not in agents:
+            raise KeyError(f"Player {pid} not in agents map")
+        agents[pid].private_log.extend(lines)
 
 
 def _summarise_variant(variant: Variant, log_paths: list[Path]) -> dict:

@@ -4,8 +4,11 @@ import csv
 import json
 from pathlib import Path
 
-from src.experiment_runner import Variant, run_experiment
-from src.game import Role
+import pytest
+
+from src.agents import RandomAgent
+from src.experiment_runner import Variant, _inject_private_log_seeds, run_experiment
+from src.game import Role, assign_roles
 from src.policies import Policy
 
 
@@ -154,3 +157,57 @@ def test_run_experiment_scripts_correctly_apply_to_each_variant(tmp_path, capsys
     b_enacts = _enact_values("B_picks_F")
     assert a_enacts and all(v == "LIBERAL" for v in a_enacts)
     assert b_enacts and all(v == "FASCIST" for v in b_enacts)
+
+
+# --- private_log_seeds (cover-story injection for deception experiments) ---
+
+
+def test_inject_private_log_seeds_appends_to_target_agent():
+    players = assign_roles(forced_roles=_ROLES)
+    agents = {p.id: RandomAgent(player=p, seed=p.id) for p in players}
+    _inject_private_log_seeds(agents, {1: ["cover story line"]})
+    assert agents[1].private_log[-1] == "cover story line"
+    assert agents[2].private_log == []  # untouched
+
+
+def test_inject_private_log_seeds_supports_multiple_lines_and_players():
+    players = assign_roles(forced_roles=_ROLES)
+    agents = {p.id: RandomAgent(player=p, seed=p.id) for p in players}
+    _inject_private_log_seeds(
+        agents,
+        {1: ["line A", "line B"], 3: ["something else"]},
+    )
+    assert agents[1].private_log == ["line A", "line B"]
+    assert agents[3].private_log == ["something else"]
+
+
+def test_inject_private_log_seeds_raises_on_unknown_player():
+    players = assign_roles(forced_roles=_ROLES)
+    agents = {p.id: RandomAgent(player=p, seed=p.id) for p in players}
+    with pytest.raises(KeyError):
+        _inject_private_log_seeds(agents, {99: ["nope"]})
+
+
+def test_variant_default_has_empty_private_log_seeds():
+    v = Variant(name="x", scripted={})
+    assert v.private_log_seeds == {}
+
+
+def test_run_experiment_with_private_log_seeds_runs_end_to_end(tmp_path, capsys):
+    """Smoke test: passing private_log_seeds shouldn't break the run."""
+    variants = [
+        Variant(
+            name="seeded",
+            scripted={1: {"nominate": 3, "vote": True}, 3: {"vote": True}},
+            scenario_kwargs={"forced_roles": _ROLES},
+            private_log_seeds={1: ["round 1 cover story: claim FL"]},
+        )
+    ]
+    run_experiment(
+        variants=variants,
+        n_runs=1,
+        output_dir=tmp_path,
+        shared_kwargs={"agents_mode": "random", "discussion": False},
+    )
+    capsys.readouterr()
+    assert (tmp_path / "seeded" / "run_001.json").exists()
