@@ -81,6 +81,10 @@ def main() -> None:
         "--output-dir", type=Path, default=Path("/tmp/exp_forced_vs_deliberate")
     )
     parser.add_argument("--base-seed", type=int, default=1)
+    parser.add_argument(
+        "--rounds", type=int, default=3,
+        help="Total rounds per game. Round 1 is forced; later rounds are free LLM play.",
+    )
     args = parser.parse_args()
 
     variants = [
@@ -88,11 +92,13 @@ def main() -> None:
             name="A_forced",
             scripted=SCRIPT_A,
             scenario_kwargs={"forced_roles": ROLES_A, "stack_deck": STACK_A},
+            apply_until_round=1,
         ),
         Variant(
             name="B_deliberate",
             scripted=SCRIPT_B,
             scenario_kwargs={"forced_roles": ROLES_B, "stack_deck": STACK_B},
+            apply_until_round=1,
         ),
     ]
 
@@ -105,6 +111,7 @@ def main() -> None:
             agents_mode="llm" if args.llm else "random",
             model="gpt-5",
             token_budget=200_000,
+            rounds=args.rounds,
         ),
     )
 

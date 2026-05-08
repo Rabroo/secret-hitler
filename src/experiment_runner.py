@@ -35,12 +35,15 @@ class Variant:
             run time; per-variant values win on conflicts.
         focus: optional list of (viewer_id, target_id) pairs to highlight in
             the summary table. Defaults to "all bystanders see Pres + Chan".
+        apply_until_round: if set, scripted decisions only apply for rounds
+            <= this number; later rounds let the LLM play freely.
     """
 
     name: str
     scripted: dict[int, dict[str, Any]]
     scenario_kwargs: dict[str, Any] = field(default_factory=dict)
     focus: list[tuple[int, int]] | None = None
+    apply_until_round: int | None = None
 
 
 def run_experiment(
@@ -90,7 +93,11 @@ def _run_one(
 
     def patched(*args, **kwargs):
         base = real_build_agents(*args, **kwargs)
-        return build_scripted_agents(base, variant.scripted)
+        return build_scripted_agents(
+            base,
+            variant.scripted,
+            apply_until_round=variant.apply_until_round,
+        )
 
     runner_module._build_agents = patched
     try:

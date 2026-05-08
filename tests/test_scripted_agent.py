@@ -155,3 +155,76 @@ def test_build_scripted_agents_wraps_only_listed_players():
     assert isinstance(wrapped[1], ScriptedAgent)
     assert wrapped[2] is base[2]  # untouched
     assert wrapped[3] is base[3]
+
+
+# --- round-bounded scripting (apply_until_round) ---
+
+
+def _agent_with_history(scripted, *, apply_until_round, history_ref, role_index=0):
+    players = assign_roles(forced_roles=_ROLES)
+    fallback = RandomAgent(player=players[role_index], seed=999)
+    return ScriptedAgent(
+        player=players[role_index],
+        fallback=fallback,
+        scripted=scripted,
+        apply_until_round=apply_until_round,
+        history_ref=history_ref,
+    ), players
+
+
+def test_apply_until_round_active_in_round_1():
+    """history_ref empty → current_round==1, apply_until_round=1 → scripted wins."""
+    history: list = []
+    agent, players = _agent_with_history(
+        {"nominate": 3}, apply_until_round=1, history_ref=history,
+    )
+    chosen = agent.nominate(players[1:])
+    assert chosen.id == 3
+    assert agent.last_nominate_reasoning == "(scripted)"
+
+
+def test_apply_until_round_falls_through_after_threshold():
+    """One completed round in history_ref → current_round==2.
+    apply_until_round=1 → scripts ignored, fallback used."""
+    history: list = ["fake_round_1_event"]
+    agent, players = _agent_with_history(
+        {"vote": False},
+        apply_until_round=1,
+        history_ref=history,
+    )
+    # vote should NOT be the scripted False — it should come from the fallback
+    # RandomAgent (whose reasoning is "(random)").
+    agent.vote(players[1], players[2])
+    assert agent.last_vote_reasoning == "(random)"
+
+
+def test_apply_until_round_none_means_always_apply():
+    """Default behaviour: scripts apply on every round."""
+    history: list = ["r1", "r2", "r3"]  # round 4 now
+    agent, players = _agent_with_history(
+        {"nominate": 3}, apply_until_round=None, history_ref=history,
+    )
+    chosen = agent.nominate(players[1:])
+    assert chosen.id == 3
+
+
+def test_apply_until_round_zero_disables_scripts():
+    history: list = []
+    agent, players = _agent_with_history(
+        {"nominate": 3}, apply_until_round=0, history_ref=history,
+    )
+    chosen = agent.nominate(players[1:])
+    # Falls through to RandomAgent — id can be anything in eligible.
+    assert chosen in players[1:]
+    assert agent.last_nominate_reasoning == "(random)"
+
+
+def test_build_scripted_agents_passes_apply_until_round():
+    from src.agents import build_scripted_agents
+
+    players = assign_roles(forced_roles=_ROLES)
+    base = {p.id: RandomAgent(player=p, seed=p.id) for p in players}
+    wrapped = build_scripted_agents(
+        base, {1: {"nominate": 3}}, apply_until_round=1,
+    )
+    assert wrapped[1].apply_until_round == 1

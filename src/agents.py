@@ -701,12 +701,15 @@ _SCRIPTED_REASONING = "(scripted)"
 class ScriptedAgent:
     """Wraps another PlayerAgent. Mechanical decisions can be pre-scripted via
     the `scripted` dict; everything else (statements, predicted_role updates)
-    delegates to the wrapped agent. See specs/scripted_agent.md.
+    delegates to the wrapped agent. See specs/scripted_agent.md and
+    specs/round_bounded_scripting.md.
     """
 
     player: Player
     fallback: PlayerAgent
     scripted: dict = field(default_factory=dict)
+    apply_until_round: Optional[int] = None
+    history_ref: list = field(default_factory=list)
     private_log: list[str] = field(default_factory=list)
     last_nominate_reasoning: str = ""
     last_vote_reasoning: str = ""
@@ -722,8 +725,14 @@ class ScriptedAgent:
         # underlying LLMAgent's prompts.
         self.private_log = self.fallback.private_log
 
+    def _scripts_active(self) -> bool:
+        if self.apply_until_round is None:
+            return True
+        current_round = len(self.history_ref) + 1
+        return current_round <= self.apply_until_round
+
     def nominate(self, eligible: list[Player]) -> Player:
-        if "nominate" in self.scripted:
+        if "nominate" in self.scripted and self._scripts_active():
             target_id = self.scripted["nominate"]
             try:
                 target = next(p for p in eligible if p.id == target_id)
@@ -739,7 +748,7 @@ class ScriptedAgent:
         return result
 
     def vote(self, president: Player, nominee: Player) -> bool:
-        if "vote" in self.scripted:
+        if "vote" in self.scripted and self._scripts_active():
             self.last_vote_reasoning = _SCRIPTED_REASONING
             return bool(self.scripted["vote"])
         result = self.fallback.vote(president, nominee)
@@ -747,7 +756,7 @@ class ScriptedAgent:
         return result
 
     def discard_policy(self, hand: list[Policy]) -> Policy:
-        if "discard" in self.scripted:
+        if "discard" in self.scripted and self._scripts_active():
             target = self.scripted["discard"]
             if target not in hand:
                 raise ValueError(
@@ -761,7 +770,7 @@ class ScriptedAgent:
         return result
 
     def enact_policy(self, hand: list[Policy]) -> Policy:
-        if "enact" in self.scripted:
+        if "enact" in self.scripted and self._scripts_active():
             target = self.scripted["enact"]
             if target not in hand:
                 raise ValueError(
@@ -775,7 +784,7 @@ class ScriptedAgent:
         return result
 
     def execute_player(self, targets: list[Player]) -> Player:
-        if "execute" in self.scripted:
+        if "execute" in self.scripted and self._scripts_active():
             target_id = self.scripted["execute"]
             try:
                 target = next(p for p in targets if p.id == target_id)
@@ -827,18 +836,26 @@ class ScriptedAgent:
 def build_scripted_agents(
     base_agents: dict[int, PlayerAgent],
     scripts: dict[int, dict],
+    *,
+    apply_until_round: Optional[int] = None,
 ) -> dict[int, PlayerAgent]:
     """Wrap selected base_agents with ScriptedAgent. Untouched ids keep their
     original agent (LLM, random, etc.). Returns a new dict; does not mutate
     base_agents.
+
+    If `apply_until_round` is set, scripts only apply for rounds <= that
+    number; later rounds delegate to the fallback (free LLM play).
     """
     out: dict[int, PlayerAgent] = dict(base_agents)
     for pid, script in scripts.items():
         if pid not in out:
             raise KeyError(f"Player {pid} not in base_agents")
+        fallback = out[pid]
         out[pid] = ScriptedAgent(
-            player=out[pid].player,
-            fallback=out[pid],
+            player=fallback.player,
+            fallback=fallback,
             scripted=dict(script),
+            apply_until_round=apply_until_round,
+            history_ref=getattr(fallback, "history", []),
         )
     return out

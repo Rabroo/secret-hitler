@@ -61,6 +61,10 @@ def main() -> None:
         "--output-dir", type=Path, default=Path("/tmp/exp_tally_pressure")
     )
     parser.add_argument("--base-seed", type=int, default=1)
+    parser.add_argument(
+        "--rounds", type=int, default=3,
+        help="Total rounds per game. Round 1 is forced; later rounds are free LLM play.",
+    )
     args = parser.parse_args()
 
     common_kwargs = {"forced_roles": ROLES, "stack_deck": STACK}
@@ -69,16 +73,19 @@ def main() -> None:
             name="0_clean",
             scripted=SCRIPT,
             scenario_kwargs={**common_kwargs, "start_tally": (0, 0)},
+            apply_until_round=1,
         ),
         Variant(
             name="M_midgame",
             scripted=SCRIPT,
             scenario_kwargs={**common_kwargs, "start_tally": (2, 2)},
+            apply_until_round=1,
         ),
         Variant(
             name="H_threshold",
             scripted=SCRIPT,
             scenario_kwargs={**common_kwargs, "start_tally": (0, 3)},
+            apply_until_round=1,
         ),
     ]
 
@@ -91,6 +98,7 @@ def main() -> None:
             agents_mode="llm" if args.llm else "random",
             model="gpt-5",
             token_budget=200_000,
+            rounds=args.rounds,
         ),
     )
 

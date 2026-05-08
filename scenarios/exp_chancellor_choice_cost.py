@@ -66,6 +66,10 @@ def main() -> None:
         default=Path("/tmp/exp_chancellor_choice_cost"),
     )
     parser.add_argument("--base-seed", type=int, default=1)
+    parser.add_argument(
+        "--rounds", type=int, default=3,
+        help="Total rounds per game. Round 1 is forced; later rounds are free LLM play.",
+    )
     args = parser.parse_args()
 
     variants = [
@@ -73,11 +77,13 @@ def main() -> None:
             name="A_picks_L",
             scripted=_script_with_enact(Policy.LIBERAL),
             scenario_kwargs={"forced_roles": ROLES, "stack_deck": STACK},
+            apply_until_round=1,
         ),
         Variant(
             name="B_picks_F",
             scripted=_script_with_enact(Policy.FASCIST),
             scenario_kwargs={"forced_roles": ROLES, "stack_deck": STACK},
+            apply_until_round=1,
         ),
     ]
 
@@ -90,6 +96,7 @@ def main() -> None:
             agents_mode="llm" if args.llm else "random",
             model="gpt-5",
             token_budget=200_000,
+            rounds=args.rounds,
         ),
     )
 
