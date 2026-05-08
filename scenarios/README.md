@@ -30,6 +30,7 @@ The viewer shows: roster + outcome, per-round bar charts of every player's `pred
 
 ## Available scenarios
 
+- **`batch_chancellor_FL`** — runs the F+L→Chancellor setup `--runs N` times (default 10) and emits aggregated CSVs (`predicted_roles.csv`, `decisions.csv`, `summary.csv`) into `--output-dir` for downstream analysis. Use this when you need *quantitative* data on how the LLM's decisions and belief updates vary across identical scenarios.
 - **`force_hitler_chancellor`** — Hitler is the only valid Chancellor; observe whether Liberals approve.
 - **`enacted_fascist_at_l0_f0`** — first round of the game, gov enacts a Fascist policy. Compare predicted_roles before and after.
 - **`round_1_fascist_enact`** — top of deck is FFF; pres has no Liberal to discard; observe how predicted_roles shift on a *forced* Fascist enaction (where the deck is to blame, not intent).
