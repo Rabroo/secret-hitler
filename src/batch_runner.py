@@ -76,6 +76,7 @@ def run_batch(
 def _write_aggregate_csvs(log_paths: list[Path], output_dir: Path) -> None:
     pred_rows: list[dict] = []
     decision_rows: list[dict] = []
+    statement_rows: list[dict] = []
     summary_rows: list[dict] = []
 
     for run_id, log_path in enumerate(log_paths, start=1):
@@ -104,6 +105,23 @@ def _write_aggregate_csvs(log_paths: list[Path], output_dir: Path) -> None:
                             "predicted_role": score,
                         }
                     )
+
+            update_reasons = r.get("predicted_role_update_reasonings", {}) or {}
+            for s in r.get("statements", []) or []:
+                pid = s.get("player_id")
+                statement_rows.append(
+                    {
+                        "run_id": run_id,
+                        "round_num": r["round_num"],
+                        "player_id": pid,
+                        "player_role": op.get(str(pid), ""),
+                        "text": s.get("text", ""),
+                        "reasoning": s.get("reasoning", ""),
+                        "predicted_role_update_reasoning": update_reasons.get(
+                            str(pid), ""
+                        ),
+                    }
+                )
 
             for player_id, decisions in r.get("decisions", {}).items():
                 for dtype, dval in decisions.items():
@@ -177,6 +195,19 @@ def _write_aggregate_csvs(log_paths: list[Path], output_dir: Path) -> None:
             "decision_type",
             "value",
             "reasoning",
+        ],
+    )
+    _write_csv(
+        output_dir / "statements.csv",
+        statement_rows,
+        [
+            "run_id",
+            "round_num",
+            "player_id",
+            "player_role",
+            "text",
+            "reasoning",
+            "predicted_role_update_reasoning",
         ],
     )
     _write_csv(

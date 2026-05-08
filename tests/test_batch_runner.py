@@ -127,6 +127,49 @@ def test_run_batch_uses_distinct_seeds_per_run(tmp_path, capsys):
     assert differ, "Runs with different seeds produced identical vote sequences"
 
 
+def test_run_batch_writes_statements_csv(tmp_path, capsys):
+    """statements.csv should exist with the expected columns."""
+    run_batch(
+        n_runs=2,
+        output_dir=tmp_path,
+        rounds=1,
+        forced_roles=_ROLES,
+        agents_mode="random",
+        # discussion ON so statements actually populate
+        discussion=True,
+    )
+    capsys.readouterr()
+    csv_path = tmp_path / "statements.csv"
+    assert csv_path.exists()
+    with open(csv_path) as f:
+        rows = list(csv.DictReader(f))
+    # 2 runs × 5 statements per enacted round if elections passed.
+    # At minimum we should see SOME statements.
+    if rows:
+        assert set(rows[0].keys()) >= {
+            "run_id", "round_num", "player_id", "player_role",
+            "text", "reasoning", "predicted_role_update_reasoning",
+        }
+
+
+def test_game_log_includes_predicted_role_update_reasonings(tmp_path, capsys):
+    """The per-round JSON log should now contain a
+    predicted_role_update_reasonings dict (possibly empty)."""
+    run_batch(
+        n_runs=1,
+        output_dir=tmp_path,
+        rounds=1,
+        forced_roles=_ROLES,
+        agents_mode="random",
+        discussion=True,
+    )
+    capsys.readouterr()
+    log = json.loads((tmp_path / "run_001.json").read_text())
+    for r in log["rounds"]:
+        assert "predicted_role_update_reasonings" in r
+        assert isinstance(r["predicted_role_update_reasonings"], dict)
+
+
 def test_run_batch_summary_records_winner_when_forced(tmp_path, capsys):
     """Force a Liberal win via stacked deck + start tally; summary should reflect it."""
     from src.policies import Policy

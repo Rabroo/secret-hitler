@@ -666,6 +666,19 @@ def _build_round_log_entry(
     players: list[Player],
     personalities: dict[int, Personality],
 ) -> dict:
+    # Capture each agent's reasoning for this round's predicted_role update
+    # so the operator can analyse *why* values moved (or didn't). Empty for
+    # agents who didn't run an update this round (e.g. Fascist team viewers
+    # whose values are pinned at known truth, or any agent on a failed-
+    # election round that skipped the update phase).
+    update_reasonings: dict[str, str] = {}
+    for p in players:
+        if not p.alive:
+            continue
+        reasoning = getattr(agents[p.id], "last_update_reasoning", "")
+        if reasoning:
+            update_reasonings[str(p.id)] = reasoning
+
     return {
         "round_num": round_num,
         "president_id": president.id,
@@ -697,6 +710,7 @@ def _build_round_log_entry(
             agents, players, president, chosen, result, leg
         ),
         "predicted_roles_after": _snapshot_predicted_roles(personalities),
+        "predicted_role_update_reasonings": update_reasonings,
     }
 
 
